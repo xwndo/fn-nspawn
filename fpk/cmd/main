@@ -1,0 +1,74 @@
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
+BIN="${TRIM_APPDEST}/bin/fn-nspawn"
+SOCK_FILE="${TRIM_APPDEST}/app.sock"
+PID_FILE="${TRIM_PKGVAR}/fn-nspawn.pid"
+LOG_FILE="${TRIM_PKGVAR}/fn-nspawn.log"
+
+is_running() {
+    if [ -f "$PID_FILE" ]; then
+        local pid
+        pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+case "${1:-}" in
+    start)
+        if is_running; then
+            exit 0
+        fi
+        if [ ! -x "$BIN" ]; then
+            chmod 755 "$BIN" 2>/dev/null || true
+        fi
+        if [ ! -x "$BIN" ]; then
+            echo "fn-nspawn 可执行文件不存在或不可执行: $BIN" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+            exit 1
+        fi
+        mkdir -p "$TRIM_PKGVAR" "$TRIM_PKGETC"
+        rm -f "$SOCK_FILE"
+        nohup "$BIN" --socket "$SOCK_FILE" --etc "$TRIM_PKGETC" >> "$LOG_FILE" 2>&1 &
+        pid=$!
+        echo "$pid" > "$PID_FILE"
+
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if [ -S "$SOCK_FILE" ] && kill -0 "$pid" 2>/dev/null; then
+                exit 0
+            fi
+            sleep 0.5
+        done
+
+        echo "fn-nspawn 启动超时，请检查日志: $LOG_FILE" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+        exit 1
+        ;;
+    stop)
+        if is_running; then
+            pid="$(cat "$PID_FILE")"
+            kill -TERM "$pid" 2>/dev/null || true
+            for _ in 1 2 3 4 5 6 7 8 9 10; do
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    break
+                fi
+                sleep 0.5
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+        fi
+        rm -f "$PID_FILE" "$SOCK_FILE"
+        exit 0
+        ;;
+    status)
+        if is_running && [ -S "$SOCK_FILE" ]; then
+            exit 0
+        fi
+        exit 3
+        ;;
+    *)
+        exit 1
+        ;;
+esac

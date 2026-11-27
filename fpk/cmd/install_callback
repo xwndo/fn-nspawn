@@ -1,0 +1,23 @@
+#!/bin/bash
+export PATH="/usr/local/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
+chmod 755 "${TRIM_APPDEST}/bin/fn-nspawn" 2>/dev/null || true
+mkdir -p "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
+
+CFG_FILE="${TRIM_PKGETC}/config.json"
+if [ ! -f "$CFG_FILE" ] && [ -n "${wizard_base_root:-}" ]; then
+    cat > "$CFG_FILE" <<EOF
+{
+  "standard_base_root": "${wizard_base_root}",
+  "base_roots": [
+    "${wizard_base_root}"
+  ],
+  "default_physical_nic": "enp2s0",
+  "default_mirror": "https://mirrors.ustc.edu.cn/debian",
+  "default_security_mirror": "https://mirrors.ustc.edu.cn/debian-security",
+  "default_suite": "trixie",
+  "default_tmp_size": "4G"
+}
+EOF
+fi
+exit 0

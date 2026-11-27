@@ -1,0 +1,17 @@
+{
+    ".url": {
+        "fn-nspawn.Application": {
+            "title": "nspawn容器",
+            "icon": "images/icon_{0}.png",
+            "type": "iframe",
+            "protocol": "",
+            "gatewayPrefix": "/app/fn-nspawn",
+            "gatewaySocket": "app.sock",
+            "url": "/app/fn-nspawn",
+            "allUsers": false,
+            "control": {
+                "accessPerm": "readonly"
+            }
+        }
+    }
+}

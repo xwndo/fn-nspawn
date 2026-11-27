@@ -1,0 +1,12 @@
+dist/
+data/
+tools/
+fpk/app/bin/
+fpk/*.fpk
+*.fpk
+*.log
+*.bak
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

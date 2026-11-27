@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" id="metaThemeColor" content="#141a26" />
+  <title>nspawn容器 · fnOS systemd-nspawn</title>
+  <link rel="stylesheet" href="./vendor/xterm.css" />
+  <link rel="stylesheet" href="./app.css" />
+  <script>
+    (function () {
+      var mq = window.matchMedia('(prefers-color-scheme: dark)');
+      window.getThemePref = function () {
+        return localStorage.getItem('fn-nspawn-theme') || 'auto';
+      };
+      window.applyTheme = function (pref) {
+        pref = pref || window.getThemePref();
+        var resolved = pref === 'auto' ? (mq.matches ? 'dark' : 'light') : pref;
+        document.documentElement.dataset.theme = resolved;
+        document.documentElement.style.colorScheme = resolved;
+        var meta = document.getElementById('metaThemeColor');
+        if (meta) meta.setAttribute('content', resolved === 'dark' ? '#141a26' : '#eaf0f9');
+      };
+      mq.addEventListener('change', function () { window.applyTheme(); });
+      window.applyTheme();
+    })();
+  </script>
+</head>
+<body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></symbol>
+    <symbol id="i-mem" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="10" rx="1.5"/><path d="M6 11v2M10 11v2M14 11v2M18 11v2M6 17v2M18 17v2"/></symbol>
+    <symbol id="i-speed" viewBox="0 0 24 24"><path d="M12 14l4-4"/><path d="M3.3 17a9 9 0 1 1 17.4 0"/></symbol>
+    <symbol id="i-traffic" viewBox="0 0 24 24"><path d="M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-net" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/></symbol>
+    <symbol id="i-tasks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M14.857 17.082a23.848 23.848 0 0 0 5.454-1.31A8.967 8.967 0 0 1 18 9.75V9A6 6 0 0 0 6 9v.75a8.967 8.967 0 0 1-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 0 1-5.714 0m5.714 0a3 3 0 1 1-5.714 0"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M21.752 15.002A9.72 9.72 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 0 1 0 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 0 1 0-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28Z"/><path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m11.25 11.25.041-.02a.75.75 0 0 1 1.063.852l-.708 2.836a.75.75 0 0 0 1.063.853l.041-.021M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9-3.75h.008v.008H12V8.25Z"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m21 7.5-9-5.25L3 7.5m18 0-9 5.25m9-5.25v9l-9 5.25M3 7.5l9 5.25M3 7.5v9l9 5.25m0-9v9"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></symbol>
+    <symbol id="i-plus-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></symbol>
+    <symbol id="i-folder-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m9 13.5 3 3m0 0 3-3m-3 3v-6m1.06-4.19-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></symbol>
+  </svg>
+  <div class="app-shell">
+    <!-- 主工作区 -->
+    <div class="workspace">
+      <!-- 左侧容器列表与功能区 -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <div class="sidebar-title-group">
+            <svg class="sidebar-title-logo" viewBox="0 0 32 32" aria-hidden="true">
+              <defs>
+                <linearGradient id="fnCubeStroke" x1="4" y1="6" x2="28" y2="26" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#3b82f6"/>
+                  <stop offset="55%" stop-color="#0ea5e9"/>
+                  <stop offset="100%" stop-color="#22d3ee"/>
+                </linearGradient>
+                <linearGradient id="fnCubeLeft" x1="5" y1="10" x2="16" y2="28" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#1d4ed8"/>
+                  <stop offset="100%" stop-color="#0284c7"/>
+                </linearGradient>
+                <linearGradient id="fnCubeRight" x1="16" y1="12" x2="27" y2="26" gradientUnits="userSpaceOnUse">
+                  <stop offset="0%" stop-color="#0369a1"/>
+                  <stop offset="100%" stop-color="#1e40af"/>
+                </linearGradient>
+              </defs>
+              <polygon points="16,3 27,9.4 16,15.8 5,9.4" fill="url(#fnCubeLeft)" stroke="url(#fnCubeStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+              <polygon points="16,5.6 22.4,9.4 16,13.2 9.6,9.4" fill="#1e3a8a" opacity="0.72"/>
+              <polygon points="5,9.4 16,15.8 16,28.8 5,22.4" fill="url(#fnCubeLeft)" stroke="url(#fnCubeStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+              <path d="M7.2 13.6L13.8 17.5M7.2 17L13.8 20.9M7.2 20.4L13.8 24.3" stroke="#38bdf8" stroke-width="1.35" stroke-linecap="round" opacity="0.9"/>
+              <polygon points="16,15.8 27,9.4 27,22.4 16,28.8" fill="url(#fnCubeRight)" stroke="url(#fnCubeStroke)" stroke-width="1.4" stroke-linejoin="round"/>
+              <path d="M18.6 17.6l1.8 1.2-1.8 2M21.4 21.1l2.8-1.6" fill="none" stroke="#67e8f9" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="sidebar-title">容器</span>
+            <span class="sidebar-count-pill" id="containerCount">0</span>
+          </div>
+        </div>
+        <div class="sidebar-actions">
+          <div class="create-menu-wrap" id="createMenuWrap">
+            <button type="button" class="btn btn-sm btn-primary btn-add-compact" id="btnAddContainerMenu" aria-haspopup="menu" aria-expanded="false">+ 新建容器</button>
+            <div class="create-dropdown" id="createDropdown" role="menu" hidden>
+              <button type="button" class="dropdown-item" id="btnCreateModal" role="menuitem">
+                <svg class="dropdown-svg" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus-circle"/></svg>
+                <span>创建容器</span>
+              </button>
+              <button type="button" class="dropdown-item" id="btnImportModal" role="menuitem">
+                <svg class="dropdown-svg" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-folder-in"/></svg>
+                <span>从配置恢复</span>
+              </button>
+            </div>
+          </div>
+          <button class="btn btn-sm btn-ghost btn-with-icon" id="btnRefresh" title="刷新容器列表与状态">
+            <svg class="btn-inline-svg" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>
+            <span>刷新</span>
+          </button>
+        </div>
+        <div class="container-list" id="containerList">
+          <div class="sidebar-empty is-loading">
+            <span class="empty-spinner"></span>
+            <div class="sidebar-empty-title">正在扫描容器...</div>
+          </div>
+        </div>
+        <div class="sidebar-footer" aria-label="系统功能">
+          <button class="btn btn-icon ios-btn-settings" id="btnSettings" title="设置" aria-label="设置">
+            <svg class="btn-svg" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
+          </button>
+          <button class="btn btn-icon ios-btn-tasks" id="btnTasks" title="任务中心" aria-label="任务中心">
+            <svg class="btn-svg" viewBox="0 0 24 24"><use href="#i-tasks"/></svg>
+            <span class="icon-badge" id="taskBadge" hidden>0</span>
+          </button>
+          <button class="btn btn-icon ios-btn-about" id="btnAbout" title="关于" aria-label="关于">
+            <svg class="btn-svg" viewBox="0 0 24 24"><use href="#i-info"/></svg>
+          </button>
+          <button class="btn btn-icon ios-btn-theme is-dark" id="btnThemeToggle" title="切换外观" aria-label="切换外观">
+            <svg class="btn-svg" viewBox="0 0 24 24"><use id="themeIconUse" href="#i-sun"/></svg>
+          </button>
+        </div>
+      </aside>
+      <div class="sidebar-resizer" id="sidebarResizer" title="左右拖动调节侧栏宽度，双击重置"></div>
+
+      <!-- 右侧详情面板 -->
+      <main class="main-panel" id="mainPanel">
+        <div class="empty-state-wrap" id="emptyState">
+          <div class="empty-state-card">
+            <div class="empty-emblem" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><use href="#i-cube"/></svg>
+            </div>
+            <div>
+              <span class="empty-status-pill" id="emptyStatusPill">
+                <span class="empty-spinner"></span>
+                <span>正在扫描宿主机容器...</span>
+              </span>
+            </div>
+            <h3 class="empty-title" id="emptyTitle">欢迎使用 nspawn 容器</h3>
+            <p class="empty-desc" id="emptyDesc">每个容器采用独立标准化目录（<code>rootfs/</code> + <code>config/container.json</code> + <code>images/</code>）持久化保存，支持随时快照回滚与重装系统后一键恢复。</p>
+            <div class="empty-actions">
+              <button class="btn btn-primary" id="btnEmptyCreate">+ 新建容器</button>
+              <button class="btn btn-ghost" id="btnEmptyImport">从配置恢复</button>
+            </div>
+            <div class="empty-features">
+              <div class="empty-feature">
+                <div class="empty-feature-head"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>独立目录持久化</div>
+                <p>配置、根文件系统与归档镜像集中存放，迁移零散配置烦恼。</p>
+              </div>
+              <div class="empty-feature">
+                <div class="empty-feature-head"><svg viewBox="0 0 24 24"><use href="#i-net"/></svg>OVS 桥接网络</div>
+                <p>自动桥接宿主机物理网卡，容器获取独立局域网 IP。</p>
+              </div>
+              <div class="empty-feature">
+                <div class="empty-feature-head"><svg viewBox="0 0 24 24"><use href="#i-shield"/></svg>快照与一键恢复</div>
+                <p>原生 Btrfs 子卷瞬时快照，重装系统后可快速恢复实例。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="detail-view" id="detailView" hidden>
+          <!-- 容器头部 -->
+          <div class="detail-header">
+            <div class="detail-head-left">
+              <span class="distro-icon" id="detailDistroIcon"></span>
+              <div>
+                <div class="detail-title-row">
+                  <h2 id="detailName">-</h2>
+                  <span class="status-badge unknown" id="detailStateBadge">-</span>
+                  <span class="pill" id="detailOS">-</span>
+                  <span class="pill" id="detailLayoutPill">-</span>
+                  <span class="pill pill-warn" id="detailLinkWarn" hidden>未同步到 systemd</span>
+                </div>
+                <div class="detail-sub" id="detailMeta">-</div>
+              </div>
+            </div>
+            <div class="detail-actions">
+              <button class="btn btn-success" id="btnStart">启动</button>
+              <button class="btn btn-warning" id="btnRestart">重启</button>
+              <button class="btn btn-danger-soft" id="btnStop">停止</button>
+              <button class="btn btn-info" id="btnRestore" title="根据配置文件同步 systemd 单元、网络脚本与 OVS 桥接并修复运行状态">修复</button>
+              <button class="btn btn-primary" id="btnMigrateStandard" title="将此容器安全复刻到标准容器目录并切换注册" hidden>迁移为标准容器</button>
+              <label class="autostart-control" title="切换开机自启（同步 systemd 与 container.json）">
+                <span class="muted">自启</span>
+                <label class="switch">
+                  <input type="checkbox" id="toggleAutostart" />
+                  <span></span>
+                </label>
+              </label>
+            </div>
+          </div>
+
+          <!-- 页签 -->
+          <nav class="tabs" id="detailTabs">
+            <button class="tab active" data-tab="overview">概览</button>
+            <button class="tab" data-tab="config">配置</button>
+            <button class="tab" data-tab="snapshots">快照</button>
+            <button class="tab" data-tab="terminal">终端</button>
+            <button class="tab" data-tab="logs">日志</button>
+          </nav>
+
+          <!-- Tab 1: 概览 -->
+          <section class="tab-pane active" id="tab-overview">
+            <div class="migrate-banner" id="migrateBanner" hidden>
+              <div class="migrate-banner-info">
+                <strong id="migrateBannerTitle">检测到非标准/外部容器</strong>
+                <div class="muted" id="migrateBannerDesc">可将容器安全复刻至标准数据目录，自动生成完整配置与快照目录并完整保留原容器全部数据。</div>
+              </div>
+              <button type="button" class="btn btn-primary btn-sm" id="btnBannerMigrate">一键迁移为标准容器</button>
+            </div>
+            <div class="cards-grid">
+              <div class="card probe-card">
+                <div class="card-title">运行状态与资源探针</div>
+                <div class="probe-rows" id="overviewStatusKV"></div>
+              </div>
+              <div class="card probe-card">
+                <div class="card-title">OVS 桥接与网络探针</div>
+                <div class="probe-rows" id="overviewNetworkKV"></div>
+              </div>
+              <div class="card card-span-2">
+                <div class="card-title-row">
+                  <div class="card-title">标准化容器目录与持久化配置</div>
+                  <button type="button" class="btn btn-sm btn-ghost" id="btnViewSpec">查看 container.json</button>
+                </div>
+                <div class="kv-list" id="overviewPathsKV"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Tab 2: 挂载与资源配置 -->
+          <section class="tab-pane" id="tab-config">
+            <div class="migrate-banner" id="externalReadonlyBanner" hidden>
+              <div class="migrate-banner-info">
+                <strong>外部运行容器为只读预览模式</strong>
+                <div class="muted">当前容器由系统外部单元拉起，未纳入标准配置目录；为防止破坏原有配置，已锁定直接修改与删除，请先点击“迁移为标准容器”。</div>
+              </div>
+            </div>
+            <form id="configForm" class="card">
+              <div class="card-title-row">
+                <div class="card-title">容器配置（同步持久化至 container.json 并自动执行 systemd-analyze verify）</div>
+              </div>
+
+              <div class="form-grid">
+                <div class="form-field">
+                  <label>物理网卡（OVS 上联口）</label>
+                  <select id="cfgPhysicalNIC"></select>
+                  <div class="nic-ovs-warn" id="cfgNICWarn" hidden></div>
+                </div>
+                <div class="form-field">
+                  <label>/tmp tmpfs 容量</label>
+                  <input type="text" id="cfgTmpSize" placeholder="如 4G、512M" />
+                </div>
+                <div class="form-field">
+                  <label>内存上限 MemoryMax（留空不限制）</label>
+                  <input type="text" id="cfgMemoryMax" placeholder="如 4G、8G" />
+                </div>
+                <div class="form-field">
+                  <label>CPU 配额 CPUQuota（留空不限制）</label>
+                  <input type="text" id="cfgCPUQuota" placeholder="如 200%、400%" />
+                </div>
+                <div class="form-field form-field-span-2">
+                  <label>容器备注说明（保存在 container.json）</label>
+                  <input type="text" id="cfgDescription" placeholder="可选，如：开发环境 / 编译节点" />
+                </div>
+              </div>
+
+              <div class="checkbox-row">
+                <label><input type="checkbox" id="cfgAutostart" /> 开机自启（同时更新 systemd enable/disable 与 container.json）</label>
+              </div>
+
+              <div class="bind-section">
+                <div class="bind-header">
+                  <span>Bind Mount 目录映射（--bind / --bind-ro）</span>
+                  <button type="button" class="btn btn-sm btn-ghost" id="btnAddCfgBind">+ 添加映射</button>
+                </div>
+                <div id="cfgBindList" class="bind-list"></div>
+              </div>
+
+              <div class="form-footer">
+                <button type="button" class="btn btn-ghost" id="btnSaveConfigOnly">仅保存并校验</button>
+                <button type="submit" class="btn btn-primary">保存并重启容器</button>
+              </div>
+            </form>
+            <div class="danger-zone">
+              <div>
+                <strong>危险操作</strong>
+                <div class="muted">移除 systemd 服务单元并可选清理 Btrfs rootfs、快照及导出镜像目录。</div>
+              </div>
+              <button type="button" class="btn btn-danger-outline" id="btnOpenDelete">删除此容器</button>
+            </div>
+          </section>
+
+          <!-- Tab 3: 镜像与快照 -->
+          <section class="tab-pane" id="tab-snapshots">
+            <div class="card">
+              <div class="card-title-row">
+                <div>
+                  <div class="card-title">Btrfs 子卷快照</div>
+                  <div class="muted" id="snapDirHint">-</div>
+                </div>
+                <div class="row-gap">
+                  <button class="btn btn-ghost btn-sm" id="btnRefreshSnaps">刷新</button>
+                  <button class="btn btn-primary btn-sm" id="btnOpenNewSnap">+ 创建快照</button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>快照名称</th>
+                      <th>属性</th>
+                      <th>创建时间</th>
+                      <th>UUID</th>
+                      <th style="text-align:right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="snapTableBody">
+                    <tr><td colspan="5" class="muted">暂无快照</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title-row">
+                <div>
+                  <div class="card-title">容器镜像归档（用于备份迁移与新建容器导入）</div>
+                  <div class="muted" id="imageDirHint">-</div>
+                </div>
+                <div class="row-gap">
+                  <button class="btn btn-ghost btn-sm" id="btnRefreshImages">刷新</button>
+                  <button class="btn btn-primary btn-sm" id="btnOpenExportImage">+ 导出 Rootfs 镜像</button>
+                </div>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>镜像文件名</th>
+                      <th>格式</th>
+                      <th>大小</th>
+                      <th>创建时间</th>
+                      <th style="text-align:right">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="imageTableBody">
+                    <tr><td colspan="5" class="muted">暂无镜像归档</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <!-- Tab 4: 网页终端 -->
+          <section class="tab-pane" id="tab-terminal">
+            <div class="term-toolbar">
+              <div class="row-gap">
+                <label class="muted">登录用户:</label>
+                <input type="text" id="termUser" value="root" style="width:120px" placeholder="root 或 admin" />
+                <button class="btn btn-primary btn-sm" id="btnTermConnect">连接终端</button>
+                <button class="btn btn-ghost btn-sm" id="btnTermDisconnect">断开</button>
+                <button class="btn btn-ghost btn-sm" id="btnTermClear">清屏</button>
+              </div>
+              <span class="muted" id="termStatus">未连接</span>
+            </div>
+            <div class="term-box" id="terminalContainer">
+              <div class="term-empty-hint" id="termEmptyHint">当前容器尚未开启终端会话，点击上方“连接终端”建立独立连接</div>
+            </div>
+          </section>
+
+          <!-- Tab 5: 实时日志 -->
+          <section class="tab-pane" id="tab-logs">
+            <div class="term-toolbar">
+              <div class="row-gap">
+                <button class="btn btn-primary btn-sm" id="btnLogConnect">实时追踪</button>
+                <button class="btn btn-ghost btn-sm" id="btnLogStop">暂停</button>
+                <button class="btn btn-ghost btn-sm" id="btnLogClear">清空</button>
+              </div>
+              <span class="muted" id="logStatus">未连接</span>
+            </div>
+            <pre class="log-viewer" id="logViewer">点击“实时追踪”查看 journalctl 日志...</pre>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- 新建容器弹窗 -->
+  <div class="modal-backdrop" id="createModal" hidden>
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>新建 nspawn 系统容器</h3>
+        <button class="modal-close" data-close="createModal">&times;</button>
+      </div>
+      <form id="createForm" class="modal-body">
+        <div class="form-grid">
+          <div class="form-field">
+            <label>创建方式 *</label>
+            <select id="newSourceType">
+              <option value="debootstrap">在线构建 (debootstrap)</option>
+              <option value="archive">从本地 Rootfs 镜像导入 (.tar.gz / .tar.zst)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>容器名称 * <span class="muted" id="vethPreview">(veth: ve-...)</span></label>
+            <input type="text" id="newMachine" required placeholder="如 dev-debian（≤12字符）" maxlength="12" />
+          </div>
+          <div class="form-field">
+            <label>容器普通 sudo 用户名 *</label>
+            <input type="text" id="newUser" value="admin" required />
+          </div>
+          <div class="form-field">
+            <label id="newPasswordLabel">用户密码 *</label>
+            <input type="password" id="newPassword" required placeholder="在线构建必填；镜像导入留空则沿用原密码" />
+          </div>
+          <div class="form-field form-field-span-2">
+            <label>存储根目录 (Btrfs) *</label>
+            <div class="input-with-btn">
+              <input type="text" id="newBaseRoot" required placeholder="/vol1/nspawn" />
+              <button type="button" class="btn btn-ghost" id="btnBrowseBaseRoot">浏览</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="newArchiveGroup" class="form-field" style="margin-top:12px;" hidden>
+          <label>本地 Rootfs 镜像归档路径 *</label>
+          <div class="input-with-btn">
+            <input type="text" id="newSourceArchive" placeholder="/vol1/.../images/exports/xxx.tar.gz" />
+            <button type="button" class="btn btn-ghost" id="btnBrowseArchive">选择镜像文件</button>
+          </div>
+        </div>
+
+        <div id="newDebootstrapGroup" class="form-grid" style="margin-top:12px;">
+          <div class="form-field">
+            <label>Linux 发行版</label>
+            <select id="newDistro">
+              <option value="debian">Debian</option>
+              <option value="ubuntu">Ubuntu</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>系统代号 (Suite)</label>
+            <input type="text" id="newSuite" value="trixie" />
+          </div>
+          <div class="form-field">
+            <label>APT 软件源镜像</label>
+            <input type="text" id="newMirror" value="https://mirrors.ustc.edu.cn/debian" />
+          </div>
+          <div class="form-field">
+            <label>安全更新镜像</label>
+            <input type="text" id="newSecMirror" value="https://mirrors.ustc.edu.cn/debian-security" />
+          </div>
+        </div>
+
+        <div class="form-grid" style="margin-top:12px;">
+          <div class="form-field">
+            <label>物理网卡（接入 OVS）</label>
+            <select id="newPhysicalNIC"></select>
+            <div class="nic-ovs-warn" id="newNICWarn" hidden></div>
+          </div>
+          <div class="form-field">
+            <label>/tmp tmpfs 容量</label>
+            <input type="text" id="newTmpSize" value="4G" />
+          </div>
+          <div class="form-field">
+            <label>内存上限 MemoryMax（可选）</label>
+            <input type="text" id="newMemoryMax" placeholder="如 4G" />
+          </div>
+          <div class="form-field">
+            <label>CPU 配额 CPUQuota（可选）</label>
+            <input type="text" id="newCPUQuota" placeholder="如 200%" />
+          </div>
+        </div>
+
+        <div class="dir-preview-box" id="newDirPreview"></div>
+
+        <div class="bind-section">
+          <div class="bind-header">
+            <span>初始 Bind Mount 映射（可选）</span>
+            <button type="button" class="btn btn-sm btn-ghost" id="btnAddNewBind">+ 添加映射</button>
+          </div>
+          <div id="newBindList" class="bind-list"></div>
+        </div>
+
+        <div class="checkbox-row">
+          <label id="newExtrasWrap"><input type="checkbox" id="newInstallExtras" checked /> 预装常用开发工具 (git, jq, tmux, python3, build-essential 等)</label>
+          <label><input type="checkbox" id="newAutostartBoot" checked /> 开机自启（写入 container.json）</label>
+          <label><input type="checkbox" id="newAutoStart" checked /> 创建完成后立即启动并验证 DHCP 网络</label>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="createModal">取消</button>
+          <button type="submit" class="btn btn-primary">开始创建容器</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 从配置文件导入/恢复弹窗 -->
+  <div class="modal-backdrop" id="importModal" hidden>
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>从配置文件恢复 / 导入容器</h3>
+        <button class="modal-close" data-close="importModal">&times;</button>
+      </div>
+      <form id="importForm" class="modal-body">
+        <p class="muted" style="margin-top:0;">重装系统或迁移磁盘后，选择容器目录或其中的 <code>config/container.json</code>（亦兼容 <code>nspawn-*.service</code>），即可按配置恢复容器、OVS 网络与开机自启。</p>
+        <div class="form-field">
+          <label>容器配置路径（支持选择容器文件夹或 <code>container.json</code>）*</label>
+          <div class="input-with-btn">
+            <input type="text" id="impConfigPath" required placeholder="/vol1/nspawn/dev-debian/config/container.json" />
+            <button type="button" class="btn btn-ghost" id="btnBrowseImport">浏览选择</button>
+            <button type="button" class="btn btn-primary" id="btnPreviewImport">读取预览</button>
+          </div>
+        </div>
+
+        <div id="importPreviewBox" class="preview-card" hidden>
+          <div class="card-title" style="margin-bottom:8px;">配置文件解析结果</div>
+          <div class="kv-list" id="importPreviewKV"></div>
+          <div class="form-grid" style="margin-top:12px;">
+            <div class="form-field">
+              <label>宿主机物理网卡（若重装系统后网卡名变化，可在此重新指定）</label>
+              <select id="impPhysicalNIC"></select>
+              <div class="nic-ovs-warn" id="impNICWarn" hidden></div>
+            </div>
+            <div class="form-field" style="justify-content:flex-end;">
+              <label><input type="checkbox" id="impApplyAutostart" checked /> 按配置文件状态应用开机自启</label>
+              <label style="margin-top:6px;"><input type="checkbox" id="impStartNow" checked /> 恢复注册后立即启动容器</label>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="importModal">取消</button>
+          <button type="submit" class="btn btn-primary" id="btnConfirmImport" disabled>确认恢复容器</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 查看 container.json 弹窗 -->
+  <div class="modal-backdrop" id="specModal" hidden>
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>容器格式化配置 (container.json)</h3>
+        <button class="modal-close" data-close="specModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="row-gap" style="justify-content:space-between;margin-bottom:10px;">
+          <span class="muted" id="specFilePath">-</span>
+          <button type="button" class="btn btn-sm btn-ghost" id="btnCopySpec">复制配置 JSON</button>
+        </div>
+        <pre class="log-viewer" id="specJsonViewer" style="max-height:460px;"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- 导出镜像弹窗 -->
+  <div class="modal-backdrop" id="exportImageModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>导出容器 Rootfs 镜像</h3>
+        <button class="modal-close" data-close="exportImageModal">&times;</button>
+      </div>
+      <form id="exportImageForm" class="modal-body">
+        <div class="form-field">
+          <label>镜像标签 (仅字母数字与 - _)</label>
+          <input type="text" id="expImgTag" value="backup" required />
+        </div>
+        <div class="form-grid" style="margin-top:12px;">
+          <div class="form-field">
+            <label>归档格式</label>
+            <select id="expImgFormat">
+              <option value="tar.gz">.tar.gz (通用 gzip)</option>
+              <option value="tar.zst">.tar.zst (zstd 高速压缩)</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>打包数据源</label>
+            <select id="expImgSource">
+              <option value="">当前 rootfs（Btrfs 自动瞬时快照，不停机）</option>
+            </select>
+          </div>
+        </div>
+        <div class="checkbox-col">
+          <label><input type="checkbox" id="expImgStopFirst" /> 打包前先停止容器（非 Btrfs 或需强制静默时勾选）</label>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="exportImageModal">取消</button>
+          <button type="submit" class="btn btn-primary">开始导出</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 创建快照弹窗 -->
+  <div class="modal-backdrop" id="snapModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>创建 Btrfs 快照</h3>
+        <button class="modal-close" data-close="snapModal">&times;</button>
+      </div>
+      <form id="snapForm" class="modal-body">
+        <div class="form-field">
+          <label>快照标签 (仅字母数字与 - _)</label>
+          <input type="text" id="snapTag" value="manual" required />
+        </div>
+        <div class="checkbox-col">
+          <label><input type="checkbox" id="snapReadOnly" checked /> 创建为只读快照 (-r，推荐用于回滚基线)</label>
+          <label><input type="checkbox" id="snapStopFirst" /> 创建前先暂停容器（保证数据库等数据绝对一致）</label>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="snapModal">取消</button>
+          <button type="submit" class="btn btn-primary">立即创建</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 回滚确认弹窗 -->
+  <div class="modal-backdrop" id="rollbackModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>确认回滚 Btrfs 快照</h3>
+        <button class="modal-close" data-close="rollbackModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>即将把容器 <strong id="rbMachine">-</strong> 的当前 <code>rootfs</code> 回滚至：</p>
+        <div class="code-box" id="rbSnapName">-</div>
+        <label style="display:flex;gap:8px;align-items:center;margin-top:12px;">
+          <input type="checkbox" id="rbSafetyBackup" checked />
+          回滚前先为当前 rootfs 创建只读保险快照（强烈建议）
+        </label>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="rollbackModal">取消</button>
+          <button type="button" class="btn btn-danger" id="btnConfirmRollback">确认回滚</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除容器弹窗 -->
+  <div class="modal-backdrop" id="deleteModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>删除容器 <span id="delMachine">-</span></h3>
+        <button class="modal-close" data-close="deleteModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="warn-text">该操作会停止并移除 systemd 服务单元以及容器 <code>config/</code> 配置目录，请谨慎操作。</p>
+        <div class="checkbox-col">
+          <label><input type="checkbox" id="delRootfs" /> 同时删除 rootfs 子卷（不可逆！）</label>
+          <label><input type="checkbox" id="delSnapshots" /> 同时删除该容器的所有快照与导出镜像 (<code>images/</code>)</label>
+        </div>
+        <div class="form-field" style="margin-top:14px;">
+          <label>请输入容器名称 <strong id="delMachineHint">-</strong> 以确认删除：</label>
+          <input type="text" id="delConfirmInput" autocomplete="off" placeholder="输入完整容器名以解锁删除" />
+          <div class="del-mismatch" id="delMismatchHint" hidden>输入的容器名称不匹配</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="deleteModal">取消</button>
+          <button type="button" class="btn btn-danger" id="btnConfirmDelete" disabled>确认删除</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 修复确认弹窗 -->
+  <div class="modal-backdrop" id="repairModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>确认修复容器 <span id="repairMachine">-</span></h3>
+        <button class="modal-close" data-close="repairModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="repairConfirmNote">将对当前容器执行配置同步与健康修复操作：</p>
+        <ul class="notice-list">
+          <li>按 <code>container.json</code> / 配置目录校验并重新生成 <code>.service</code> 与 OVS 网络脚本；</li>
+          <li>更新系统盘 <code>/etc/systemd/system/</code> 实体单元副本并同步开机自启状态；</li>
+          <li>校验物理网卡与 OVS 网桥状态后，执行 <code>systemctl restart</code> 重新拉起容器。</li>
+        </ul>
+        <p class="muted" style="margin-top:12px;">注：运行中的容器将会经历一次短暂重启；<code>rootfs</code> 内数据不会丢失。</p>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="repairModal">取消</button>
+          <button type="button" class="btn btn-primary" id="btnConfirmRepair">确认修复</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 一键迁移为标准容器弹窗 -->
+  <div class="modal-backdrop" id="migrateModal" hidden>
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>安全迁移为标准容器</h3>
+        <button class="modal-close" data-close="migrateModal">&times;</button>
+      </div>
+      <form id="migrateForm" class="modal-body">
+        <div class="preview-card" style="margin-top:0;margin-bottom:14px;">
+          <div class="card-title" style="margin-bottom:8px;">源容器信息与安全策略</div>
+          <div class="kv-list" id="migSourceKV"></div>
+          <ul class="notice-list">
+            <li>先安全停止原容器，随后使用 Btrfs 瞬时快照或完整属性复制将 <code>rootfs</code> 复刻至标准容器目录；</li>
+            <li>自动禁用并清理原容器的系统启动项与 <code>/etc/systemd/system/</code> 注册单元，切换为标准 5 文件结构；</li>
+            <li><strong>全程不修改、不删除原容器的 <code>rootfs</code> 与原配置目录</strong>，确认新容器稳定运行后由您自行决定是否清理旧数据。</li>
+          </ul>
+        </div>
+        <div class="form-grid">
+          <div class="form-field form-field-span-2">
+            <label>目标标准容器根目录 *</label>
+            <div class="input-with-btn">
+              <input type="text" id="migTargetBaseRoot" required placeholder="/vol1/nspawn" />
+              <button type="button" class="btn btn-ghost" id="btnBrowseMigRoot">浏览</button>
+            </div>
+          </div>
+          <div class="form-field">
+            <label>目标容器名称 * <span class="muted" id="migVethPreview">(veth: ve-...)</span></label>
+            <input type="text" id="migTargetMachine" required maxlength="12" />
+          </div>
+          <div class="form-field">
+            <label>物理网卡（OVS 上联口）</label>
+            <select id="migPhysicalNIC"></select>
+            <div class="nic-ovs-warn" id="migNICWarn" hidden></div>
+          </div>
+        </div>
+        <div class="dir-preview-box" id="migDirPreview"></div>
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="migAutostart" checked /> 迁移后启用开机自启</label>
+          <label><input type="checkbox" id="migStartNow" checked /> 迁移完成后立即启动新标准容器</label>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="migrateModal">取消</button>
+          <button type="submit" class="btn btn-primary" id="btnConfirmMigrate">开始安全迁移</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>管理器设置</h3>
+        <button class="modal-close" data-close="settingsModal">&times;</button>
+      </div>
+      <form id="settingsForm" class="modal-body">
+        <div class="form-field">
+          <label>容器标准数据目录（可手动输入或浏览选择，新建与迁移默认位置）*</label>
+          <div class="input-with-btn">
+            <input type="text" id="setStandardBaseRoot" required placeholder="/vol1/nspawn" />
+            <button type="button" class="btn btn-ghost" id="btnBrowseStdRoot">浏览</button>
+          </div>
+        </div>
+        <div class="form-field" style="margin-top:12px;">
+          <div class="bind-header">
+            <span>补充扫描容器根目录列表（支持手动输入或浏览添加，每行一个）</span>
+            <button type="button" class="btn btn-sm btn-ghost" id="btnAddScanRoot">+ 浏览添加目录</button>
+          </div>
+          <textarea id="setBaseRoots" rows="3" placeholder="/vol1/nspawn"></textarea>
+        </div>
+        <div class="form-grid" style="margin-top:12px;">
+          <div class="form-field">
+            <label>默认物理网卡</label>
+            <select id="setDefaultNIC"></select>
+            <div class="nic-ovs-warn" id="setDefaultNICWarn" hidden></div>
+          </div>
+          <div class="form-field">
+            <label>默认 Debian 代号</label>
+            <input type="text" id="setDefaultSuite" />
+          </div>
+          <div class="form-field">
+            <label>默认 APT 镜像</label>
+            <input type="text" id="setDefaultMirror" />
+          </div>
+          <div class="form-field">
+            <label>默认安全镜像</label>
+            <input type="text" id="setDefaultSecMirror" />
+          </div>
+          <div class="form-field form-field-span-2">
+            <label>外观主题</label>
+            <select id="setTheme">
+              <option value="auto">跟随系统</option>
+              <option value="dark">深色</option>
+              <option value="light">浅色</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="settingsModal">取消</button>
+          <button type="submit" class="btn btn-primary">保存设置</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 关于弹窗 -->
+  <div class="modal-backdrop" id="aboutModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3>关于</h3>
+        <button class="modal-close" data-close="aboutModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="about-hero">
+          <div class="brand-badge">[&gt;_]</div>
+          <div style="min-width:0;flex:1;">
+            <div class="row-gap" style="flex-wrap:wrap;">
+              <strong style="font-size:16px;">nspawn容器</strong>
+              <span class="pill pill-ok" id="aboutVersion">v1.3.3</span>
+            </div>
+            <div class="muted" style="margin-top:2px;">飞牛 fnOS 原生 systemd-nspawn + OVS + Btrfs 系统容器可视化管理器</div>
+          </div>
+        </div>
+        <div class="kv-list" id="aboutInfoKV"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" data-close="aboutModal">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 宿主机文件/目录浏览器弹窗 -->
+  <div class="modal-backdrop" id="fsBrowseModal" hidden style="z-index: 70;">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3 id="fsBrowseTitle">选择路径</h3>
+        <button class="modal-close" data-close="fsBrowseModal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="fs-bookmarks" id="fsBookmarks"></div>
+        <div class="input-with-btn" style="margin:8px 0;">
+          <button type="button" class="btn btn-ghost btn-sm" id="btnFsUp">上一级</button>
+          <input type="text" id="fsCurrentPath" />
+          <button type="button" class="btn btn-ghost btn-sm" id="btnFsGo">跳转</button>
+        </div>
+        <div class="fs-list" id="fsEntryList"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-ghost" data-close="fsBrowseModal">取消</button>
+          <button type="button" class="btn btn-primary" id="btnFsSelectDir">选择当前目录</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 任务日志弹窗 -->
+  <div class="modal-backdrop" id="tasksModal" hidden>
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h3>后台任务与执行日志</h3>
+        <button class="modal-close" data-close="tasksModal">&times;</button>
+      </div>
+      <div class="modal-body tasks-layout">
+        <div class="task-list" id="taskList"></div>
+        <pre class="log-viewer task-log" id="taskLogViewer">选择一个任务查看执行日志...</pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="./vendor/xterm.js"></script>
+  <script src="./vendor/addon-fit.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

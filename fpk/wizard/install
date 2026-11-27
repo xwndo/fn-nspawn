@@ -1,0 +1,27 @@
+[
+    {
+        "stepTitle": "容器存储根目录配置",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "请设置新建与迁移容器的默认标准数据目录（建议位于 Btrfs 存储空间下，如 /vol1/nspawn）。安装后也可随时在界面左下角「设置」中可视化浏览更改或添加补充扫描目录。"
+            },
+            {
+                "type": "text",
+                "field": "wizard_base_root",
+                "label": "容器标准数据目录 (Btrfs)",
+                "initValue": "/vol1/nspawn",
+                "rules": [
+                    {
+                        "required": true,
+                        "message": "请输入容器标准数据目录的绝对路径"
+                    },
+                    {
+                        "pattern": "^/.*",
+                        "message": "目录路径必须以 / 开头（例如 /vol1/nspawn）"
+                    }
+                ]
+            }
+        ]
+    }
+]

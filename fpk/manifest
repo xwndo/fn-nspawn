@@ -1,0 +1,12 @@
+appname=fn-nspawn
+version=1.3.3
+display_name=nspawn容器
+desc=基于 systemd-nspawn + OVS + Btrfs 的飞牛原生 nspawn 容器可视化管理器
+source=thirdparty
+platform=x86
+maintainer=xwndo
+distributor=xwndo
+desktop_uidir=ui
+desktop_applaunchname=fn-nspawn.Application
+ctl_stop=true
+checkport=false
