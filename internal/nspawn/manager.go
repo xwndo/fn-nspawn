@@ -21,7 +21,7 @@ import (
 )
 
 var (
-	AppVersion    = "1.3.3"
+	AppVersion    = "1.3.5"
 	reMachineName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 	reUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 )
@@ -1315,12 +1315,14 @@ func (m *Manager) InspectHostEnvironment() HostEnvironment {
 	ovsPath, err := exec.LookPath("ovs-vsctl")
 	env.HasOVS = err == nil
 
+	bridgeSet := make(map[string]bool)
 	if env.HasOVS {
 		if out, err := exec.Command(ovsPath, "list-br").Output(); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				line = strings.TrimSpace(line)
 				if line != "" {
 					env.OVSBridges = append(env.OVSBridges, line)
+					bridgeSet[line] = true
 				}
 			}
 		}
@@ -1330,7 +1332,7 @@ func (m *Manager) InspectHostEnvironment() HostEnvironment {
 	if entries, err := os.ReadDir("/sys/class/net"); err == nil {
 		for _, e := range entries {
 			name := e.Name()
-			if name == "lo" || strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "ve-") || strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") {
+			if name == "lo" || name == "ovs-system" || bridgeSet[name] || strings.HasPrefix(name, "veth") || strings.HasPrefix(name, "ve-") || strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") {
 				continue
 			}
 			nic := NICInfo{Name: name}
@@ -1363,6 +1365,59 @@ func (m *Manager) InspectHostEnvironment() HostEnvironment {
 	}
 
 	return env
+}
+
+// PreferredOVSNIC returns the best physical NIC currently attached to an OVS bridge.
+func (m *Manager) PreferredOVSNIC() string {
+	env := m.InspectHostEnvironment()
+	for _, n := range env.NICs {
+		if n.IsOVSPort && n.OperState == "up" {
+			return n.Name
+		}
+	}
+	for _, n := range env.NICs {
+		if n.IsOVSPort {
+			return n.Name
+		}
+	}
+	return ""
+}
+
+// EnsureDefaultOVSNIC aligns default_physical_nic in AppConfig with an active OVS port on startup.
+func (m *Manager) EnsureDefaultOVSNIC() {
+	env := m.InspectHostEnvironment()
+	cfg := m.cfgStore.Get()
+	currentValid := false
+	var firstUp, firstOVS string
+	for _, n := range env.NICs {
+		if !n.IsOVSPort {
+			continue
+		}
+		if firstOVS == "" {
+			firstOVS = n.Name
+		}
+		if firstUp == "" && n.OperState == "up" {
+			firstUp = n.Name
+		}
+		if n.Name == cfg.DefaultPhysicalNIC {
+			currentValid = true
+		}
+	}
+	if currentValid {
+		return
+	}
+	best := firstUp
+	if best == "" {
+		best = firstOVS
+	}
+	if best != "" && best != cfg.DefaultPhysicalNIC {
+		cfg.DefaultPhysicalNIC = best
+		if err := m.cfgStore.Save(cfg); err != nil {
+			log.Printf("自动保存默认 OVS 网卡 (%s) 失败: %v", best, err)
+		} else {
+			log.Printf("已自动将默认物理网卡设置为已开启 OVS 的网卡: %s", best)
+		}
+	}
 }
 
 func (m *Manager) BrowseFS(reqPath string) (*FSBrowseResult, error) {

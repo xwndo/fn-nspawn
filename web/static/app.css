@@ -157,6 +157,25 @@ html, body {
 .migrate-banner-info strong { display: block; font-size: 13.5px; color: var(--text); }
 .migrate-banner-info .muted { margin-top: 3px; line-height: 1.5; }
 
+.ovs-alert-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 16px;
+  margin: 14px 20px 0;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--orange) 13%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--orange) 42%, var(--border));
+  -webkit-backdrop-filter: var(--blur);
+  backdrop-filter: var(--blur);
+  flex-shrink: 0;
+}
+.ovs-alert-info { min-width: 0; }
+.ovs-alert-info strong { display: block; font-size: 13.5px; color: var(--orange); }
+.ovs-alert-info .muted { margin-top: 3px; line-height: 1.5; }
+.ovs-alert-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
 .notice-list {
   margin: 10px 0 0;
   padding-left: 18px;
@@ -616,6 +635,12 @@ html[data-theme="light"] .container-item.active {
   color: var(--green);
   border-color: color-mix(in srgb, var(--green) 32%, var(--border));
   background: color-mix(in srgb, var(--green) 10%, transparent);
+}
+
+.empty-status-pill.is-warn {
+  color: var(--orange);
+  border-color: color-mix(in srgb, var(--orange) 38%, var(--border));
+  background: color-mix(in srgb, var(--orange) 11%, transparent);
 }
 
 .empty-status-pill.is-error {
@@ -1150,6 +1175,46 @@ input:focus, select:focus, textarea:focus {
   min-width: 0;
 }
 
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.password-input-wrap input {
+  width: 100%;
+  padding-right: 36px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.password-toggle-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.password-toggle-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
 .dir-preview-box {
   margin-top: 12px;
   padding: 10px 12px;
@@ -1621,7 +1686,8 @@ html[data-theme="light"] .btn.btn-icon:hover:not(:disabled) {
   .probe-sub { white-space: normal; word-break: break-all; }
   .kv-row { flex-direction: column; align-items: flex-start; gap: 3px; }
   .kv-v { text-align: left; justify-content: flex-start; width: 100%; }
-  .danger-zone, .card-title-row, .term-toolbar, .migrate-banner { flex-direction: column; align-items: stretch; gap: 10px; }
+  .danger-zone, .card-title-row, .term-toolbar, .migrate-banner, .ovs-alert-banner { flex-direction: column; align-items: stretch; gap: 10px; }
+  .ovs-alert-banner { margin: 12px 12px 0; }
   .term-toolbar .row-gap { flex-wrap: wrap; }
 }
 
@@ -1630,6 +1696,7 @@ html[data-theme="light"] .btn.btn-icon:hover:not(:disabled) {
   .app-shell { height: auto; min-height: 100dvh; overflow: visible; }
   .workspace { flex-direction: column; overflow: visible; }
   .main-panel { overflow: visible; }
+  .ovs-alert-banner { margin: 12px 12px 0; }
   .detail-view { height: auto; }
   .tab-pane { overflow: visible; padding: 12px 12px calc(20px + env(safe-area-inset-bottom)); }
 
@@ -1687,7 +1754,7 @@ html[data-theme="light"] .btn.btn-icon:hover:not(:disabled) {
   .kv-row { flex-direction: column; align-items: flex-start; gap: 3px; }
   .kv-v { text-align: left; justify-content: flex-start; width: 100%; }
 
-  .danger-zone, .card-title-row, .term-toolbar, .migrate-banner { flex-direction: column; align-items: stretch; gap: 10px; }
+  .danger-zone, .card-title-row, .term-toolbar, .migrate-banner, .ovs-alert-banner { flex-direction: column; align-items: stretch; gap: 10px; }
   .term-toolbar .row-gap { flex-wrap: wrap; }
   .term-toolbar input { flex: 1 1 90px; }
 

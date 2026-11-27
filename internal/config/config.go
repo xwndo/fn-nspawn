@@ -27,7 +27,7 @@ func DefaultAppConfig() AppConfig {
 	return AppConfig{
 		StandardBaseRoot:      "/vol1/nspawn",
 		BaseRoots:             []string{"/vol1/nspawn"},
-		DefaultPhysicalNIC:    "enp2s0",
+		DefaultPhysicalNIC:    "",
 		DefaultMirror:         "https://mirrors.ustc.edu.cn/debian",
 		DefaultSecurityMirror: "https://mirrors.ustc.edu.cn/debian-security",
 		DefaultSuite:          "trixie",
@@ -85,9 +85,6 @@ func mergeDefaults(c AppConfig) AppConfig {
 		}
 	} else {
 		c.StandardBaseRoot = filepath.Clean(c.StandardBaseRoot)
-	}
-	if c.DefaultPhysicalNIC == "" {
-		c.DefaultPhysicalNIC = def.DefaultPhysicalNIC
 	}
 	if c.DefaultMirror == "" {
 		c.DefaultMirror = def.DefaultMirror

@@ -312,9 +312,44 @@
     }, 4000);
   }
 
+  function getOVSNICs(host = state.host) {
+    return (host?.nics || []).filter((n) => n.is_ovs_port);
+  }
+
+  function renderOVSNoticeBanner() {
+    const banner = $('ovsNoticeBanner');
+    const titleEl = $('ovsNoticeTitle');
+    const descEl = $('ovsNoticeDesc');
+    if (!banner || !titleEl || !descEl) return;
+    const h = state.host;
+    if (!h) {
+      banner.hidden = true;
+      return;
+    }
+    if (!h.has_ovs) {
+      titleEl.textContent = '宿主机未启用 Open vSwitch (OVS) 服务';
+      descEl.textContent = '容器依赖 OVS 网桥获取独立局域网 IP。请先前往飞牛 NAS「系统设置 → 网络设置」中为物理网卡开启 OVS，完成后点击右侧“重新检测 OVS”。';
+      banner.hidden = false;
+      return;
+    }
+    const ovsNICs = getOVSNICs(h);
+    if (ovsNICs.length === 0) {
+      const detected = (h.nics || []).map((n) => n.name).filter(Boolean);
+      const nicHint = detected.length
+        ? `当前检测到物理网卡：${detected.join('、')}（均未开启 OVS）。`
+        : '当前未检测到可用 OVS 物理网卡。';
+      titleEl.textContent = '未检测到已开启 OVS 的物理网卡';
+      descEl.textContent = `${nicHint}请前往飞牛 NAS「系统设置 → 网络设置」为物理网卡开启 OVS 开关，开启后点击右侧“重新检测 OVS”即可自动识别。`;
+      banner.hidden = false;
+      return;
+    }
+    banner.hidden = true;
+  }
+
   function renderHost() {
     const h = state.host;
     if (!h) return;
+    renderOVSNoticeBanner();
     renderAboutModal();
     populateNICSelect($('cfgPhysicalNIC'), h.nics, undefined, $('cfgNICWarn'));
     populateNICSelect($('newPhysicalNIC'), h.nics, undefined, $('newNICWarn'));
@@ -323,10 +358,43 @@
     populateNICSelect($('setDefaultNIC'), h.nics, state.settings?.default_physical_nic, $('setDefaultNICWarn'));
   }
 
+  const recheckBtn = $('btnRecheckOVS');
+  if (recheckBtn) {
+    recheckBtn.addEventListener('click', async () => {
+      recheckBtn.disabled = true;
+      recheckBtn.textContent = '检测中...';
+      try {
+        const [host, settings] = await Promise.all([
+          apiFetch('/api/host'),
+          apiFetch('/api/settings'),
+        ]);
+        state.host = host;
+        state.settings = settings;
+        renderHost();
+        if (state.containers.length === 0) {
+          updateEmptyState('empty');
+        } else if (state.selectedMachine) {
+          renderDetail();
+        }
+        const ovsList = getOVSNICs(host);
+        if (host.has_ovs && ovsList.length > 0) {
+          toast(`已检测到可用 OVS 网卡: ${ovsList.map((n) => n.name).join('、')}`);
+        } else {
+          toast('仍未检测到已开启 OVS 的物理网卡，请先在飞牛「系统设置 → 网络设置」中开启', 'err');
+        }
+      } catch (err) {
+        toast(`检测 OVS 状态失败: ${err.message}`, 'err');
+      } finally {
+        recheckBtn.disabled = false;
+        recheckBtn.textContent = '重新检测 OVS';
+      }
+    });
+  }
+
   function renderAboutModal() {
     const h = state.host || {};
     const me = state.me || {};
-    const ver = h.app_version || '1.3.3';
+    const ver = h.app_version || '1.3.5';
     $('aboutVersion').textContent = `v${ver}`;
     const userDisplay = me.username || 'admin';
     const depPill = (ok) => ok
@@ -350,7 +418,7 @@
     openModal('aboutModal');
   });
 
-  function updateNICOVSWarning(selectEl, warnEl) {
+  function updateNICOVSWarning(selectEl, warnEl, fallbackNote = '') {
     if (!selectEl || !warnEl) return;
     const h = state.host;
     const nicName = selectEl.value;
@@ -360,23 +428,23 @@
     }
     if (!h.has_ovs) {
       warnEl.hidden = false;
-      warnEl.textContent = '宿主机未检测到 Open vSwitch (OVS) 服务。本管理器依赖 OVS 网桥为容器分配独立局域网 IP，请先在飞牛系统网络设置开启 OVS。';
+      warnEl.textContent = '宿主机未检测到 Open vSwitch (OVS) 服务。本管理器依赖 OVS 网桥为容器分配独立局域网 IP，请先在飞牛「系统设置 → 网络设置」开启 OVS。';
+      return;
+    }
+    const ovsNICs = getOVSNICs(h);
+    if (ovsNICs.length === 0) {
+      warnEl.hidden = false;
+      warnEl.textContent = '未检测到任何已开启 OVS 的物理网卡。请在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS，然后点击界面上方“重新检测 OVS”。';
       return;
     }
     if (!nicName) {
-      warnEl.hidden = true;
+      warnEl.hidden = false;
+      warnEl.textContent = '请选择已开启 OVS 的物理网卡。';
       return;
     }
-    const nics = h.nics || [];
-    const matched = nics.find((n) => n.name === nicName);
-    if (!matched) {
+    if (fallbackNote) {
       warnEl.hidden = false;
-      warnEl.textContent = `当前选择的网卡 ${nicName} 在宿主机中未找到，请改选已开启 OVS 的物理网卡。`;
-      return;
-    }
-    if (!matched.is_ovs_port) {
-      warnEl.hidden = false;
-      warnEl.textContent = `网卡 ${nicName} 当前未开启 OVS（未加入 OVS Bridge），容器无法桥接联网。请先到飞牛 NAS「网络设置」为该网卡开启 OVS，或改选已标注 [已开启 OVS] 的网卡。`;
+      warnEl.textContent = fallbackNote;
       return;
     }
     warnEl.hidden = true;
@@ -386,31 +454,34 @@
   function populateNICSelect(selectEl, nics, currentVal, warnEl) {
     if (!selectEl) return;
     const prevVal = currentVal !== undefined ? currentVal : selectEl.value;
-    const list = [...(nics || [])].sort((a, b) => {
-      if (!!a.is_ovs_port !== !!b.is_ovs_port) return a.is_ovs_port ? -1 : 1;
-      if ((a.oper_state === 'up') !== (b.oper_state === 'up')) return a.oper_state === 'up' ? -1 : 1;
-      return a.name.localeCompare(b.name);
-    });
-    selectEl.innerHTML = list.map((n) => {
-      const tag = n.is_ovs_port
-        ? ` [已开启 OVS: ${n.ovs_bridge}]`
-        : ` [未开启 OVS · ${n.oper_state || 'unknown'}]`;
-      return `<option value="${esc(n.name)}">${esc(n.name)}${esc(tag)}</option>`;
-    }).join('');
-    if (prevVal && !list.some((n) => n.name === prevVal)) {
-      selectEl.insertAdjacentHTML('beforeend', `<option value="${esc(prevVal)}">${esc(prevVal)} (未检测到 / 未开启 OVS)</option>`);
+    const ovsList = [...(nics || [])]
+      .filter((n) => n.is_ovs_port)
+      .sort((a, b) => {
+        if ((a.oper_state === 'up') !== (b.oper_state === 'up')) return a.oper_state === 'up' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+
+    if (ovsList.length === 0) {
+      selectEl.innerHTML = '<option value="">未检测到已开启 OVS 的网卡</option>';
+      selectEl.value = '';
+      updateNICOVSWarning(selectEl, warnEl);
+      return;
     }
-    if (prevVal) {
+
+    selectEl.innerHTML = ovsList.map((n) =>
+      `<option value="${esc(n.name)}">${esc(n.name)} [OVS: ${esc(n.ovs_bridge || 'bridge')}]</option>`
+    ).join('');
+
+    let fallbackNote = '';
+    if (prevVal && ovsList.some((n) => n.name === prevVal)) {
       selectEl.value = prevVal;
     } else {
-      const firstOVS = list.find((n) => n.is_ovs_port);
-      if (firstOVS) {
-        selectEl.value = firstOVS.name;
-      } else if (list.length > 0) {
-        selectEl.value = list[0].name;
+      selectEl.value = ovsList[0].name;
+      if (prevVal) {
+        fallbackNote = `原配置网卡 ${prevVal} 当前未开启 OVS，已自动切换至可用 OVS 网卡 ${ovsList[0].name}（保存后生效）。`;
       }
     }
-    updateNICOVSWarning(selectEl, warnEl);
+    updateNICOVSWarning(selectEl, warnEl, fallbackNote);
   }
 
   [
@@ -500,10 +571,16 @@
       return;
     }
     const h = state.host;
-    const allReady = !!(h && h.has_systemd_nspawn && h.has_ovs && h.has_btrfs);
+    const hasOVSNIC = !!(h && h.has_ovs && getOVSNICs(h).length > 0);
+    const allReady = !!(h && h.has_systemd_nspawn && hasOVSNIC && h.has_btrfs);
     pill.hidden = false;
-    pill.className = `empty-status-pill ${allReady ? 'is-ready' : ''}`;
-    pill.innerHTML = `<span class="empty-status-dot"></span><span>${allReady ? '宿主机环境就绪 · 暂无容器实例' : '宿主机已连接 · 暂无容器实例'}</span>`;
+    if (!hasOVSNIC) {
+      pill.className = 'empty-status-pill is-warn';
+      pill.innerHTML = '<span class="empty-status-dot"></span><span>未检测到已开启 OVS 的网卡 · 请先在飞牛网络设置开启 OVS</span>';
+    } else {
+      pill.className = `empty-status-pill ${allReady ? 'is-ready' : ''}`;
+      pill.innerHTML = `<span class="empty-status-dot"></span><span>${allReady ? '宿主机环境就绪 · 暂无容器实例' : '宿主机已连接 · 暂无容器实例'}</span>`;
+    }
     title.textContent = '开始创建你的第一个系统容器';
     desc.innerHTML = defaultDesc;
   }
@@ -949,13 +1026,18 @@ ${cdir}/
     e.preventDefault();
     const machine = state.selectedMachine;
     if (!machine) return;
+    const nic = $('migPhysicalNIC').value.trim();
+    if (!nic) {
+      toast('未检测到已开启 OVS 的网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS', 'err');
+      return;
+    }
     try {
       const task = await apiFetch(`/api/containers/${encodeURIComponent(machine)}/migrate`, {
         method: 'POST',
         body: JSON.stringify({
           target_base_root: $('migTargetBaseRoot').value.trim(),
           target_machine: $('migTargetMachine').value.trim(),
-          physical_nic: $('migPhysicalNIC').value,
+          physical_nic: nic,
           autostart: $('migAutostart').checked,
           start_now: $('migStartNow').checked,
         }),
@@ -971,9 +1053,14 @@ ${cdir}/
   async function saveContainerConfig(restartNow) {
     const machine = state.selectedMachine;
     if (!machine) return;
+    const nic = $('cfgPhysicalNIC').value.trim();
+    if (!nic) {
+      toast('未检测到已开启 OVS 的网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS', 'err');
+      return;
+    }
     const payload = {
       description: $('cfgDescription').value.trim(),
-      physical_nic: $('cfgPhysicalNIC').value,
+      physical_nic: nic,
       tmp_size: $('cfgTmpSize').value.trim(),
       memory_max: $('cfgMemoryMax').value.trim(),
       cpu_quota: $('cfgCPUQuota').value.trim(),
@@ -1232,14 +1319,18 @@ ${cdir}/
   });
 
   // Create container
+  function getStandardBaseRoot() {
+    return state.settings?.standard_base_root || (state.settings?.base_roots && state.settings.base_roots[0]) || '/vol1/nspawn';
+  }
+
   function updateCreateDirPreview() {
-    const base = $('newBaseRoot').value.trim() || state.settings?.standard_base_root || '/vol1/nspawn';
+    const base = getStandardBaseRoot();
     const machine = $('newMachine').value.trim() || '<容器名>';
     const cdir = `${base.replace(/\/+$/, '')}/${machine}`;
     $('newDirPreview').textContent =
-`标准化容器目录预览：
+`标准化容器目录预览（自动使用设置中的标准数据目录）：
 ${cdir}/
-├── rootfs/              (Btrfs 子卷)
+├── rootfs/              (Btrfs 子卷，自动创建)
 ├── config/              (container.json + nspawn-${machine}.service + network-*.sh + restore.sh)
 └── images/              (snapshots/ + exports/)`;
   }
@@ -1254,7 +1345,6 @@ ${cdir}/
   }
 
   $('newSourceType').addEventListener('change', toggleCreateSourceFields);
-  $('newBaseRoot').addEventListener('input', updateCreateDirPreview);
   $('newMachine').addEventListener('input', (e) => {
     const v = e.target.value.trim();
     $('vethPreview').textContent = v ? `(veth: ve-${v}, ${v.length + 3}/15 字符)` : '(veth: ve-...)';
@@ -1273,15 +1363,35 @@ ${cdir}/
     }
   });
 
+  function setNewPasswordVisible(visible) {
+    const input = $('newPassword');
+    const useEl = $('newPasswordEyeUse');
+    const btn = $('btnToggleNewPassword');
+    if (!input || !useEl || !btn) return;
+    input.type = visible ? 'text' : 'password';
+    useEl.setAttribute('href', visible ? '#i-eye-slash' : '#i-eye');
+    const label = visible ? '隐藏密码' : '显示密码';
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-pressed', String(visible));
+  }
+
+  $('btnToggleNewPassword').addEventListener('click', () => {
+    const isHidden = $('newPassword').type === 'password';
+    setNewPasswordVisible(isHidden);
+  });
+
   function prepareCreateModalDefaults() {
+    setNewPasswordVisible(false);
     const cfg = state.settings;
     if (cfg) {
-      $('newBaseRoot').value = cfg.standard_base_root || (cfg.base_roots && cfg.base_roots[0]) || '/vol1/nspawn';
       $('newSuite').value = cfg.default_suite || 'trixie';
       $('newMirror').value = cfg.default_mirror || 'https://mirrors.ustc.edu.cn/debian';
       $('newSecMirror').value = cfg.default_security_mirror || 'https://mirrors.ustc.edu.cn/debian-security';
       $('newTmpSize').value = cfg.default_tmp_size || '4G';
       populateNICSelect($('newPhysicalNIC'), state.host?.nics, cfg.default_physical_nic, $('newNICWarn'));
+    } else {
+      populateNICSelect($('newPhysicalNIC'), state.host?.nics, undefined, $('newNICWarn'));
     }
     toggleCreateSourceFields();
     updateCreateDirPreview();
@@ -1334,23 +1444,11 @@ ${cdir}/
   });
   $('btnEmptyCreate').addEventListener('click', openCreateModalDefault);
 
-  $('btnBrowseBaseRoot').addEventListener('click', () => {
-    openFSBrowser({
-      title: '选择容器存储根目录',
-      mode: 'dir',
-      initialPath: $('newBaseRoot').value.trim(),
-      onSelect: (p) => {
-        $('newBaseRoot').value = p;
-        updateCreateDirPreview();
-      },
-    });
-  });
-
   $('btnBrowseArchive').addEventListener('click', () => {
     openFSBrowser({
       title: '选择 Rootfs 镜像归档 (.tar.gz / .tar.zst)',
       mode: 'archive',
-      initialPath: $('newSourceArchive').value.trim() || $('newBaseRoot').value.trim(),
+      initialPath: $('newSourceArchive').value.trim() || getStandardBaseRoot(),
       onSelect: (p) => {
         $('newSourceArchive').value = p;
       },
@@ -1359,16 +1457,20 @@ ${cdir}/
 
   $('createForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const nic = $('newPhysicalNIC').value.trim();
+    if (!nic) {
+      toast('未检测到已开启 OVS 的网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS', 'err');
+      return;
+    }
     const payload = {
       source_type: $('newSourceType').value,
       source_archive: $('newSourceArchive').value.trim(),
       machine: $('newMachine').value.trim(),
       container_user: $('newUser').value.trim(),
       password: $('newPassword').value,
-      base_root: $('newBaseRoot').value.trim(),
       distro: $('newDistro').value,
       suite: $('newSuite').value.trim(),
-      physical_nic: $('newPhysicalNIC').value,
+      physical_nic: nic,
       tmp_size: $('newTmpSize').value.trim(),
       memory_max: $('newMemoryMax').value.trim(),
       cpu_quota: $('newCPUQuota').value.trim(),
@@ -1386,6 +1488,7 @@ ${cdir}/
       });
       closeModal('createModal');
       $('newPassword').value = '';
+      setNewPasswordVisible(false);
       toast('创建任务已提交');
       openTaskMonitor(task.id);
     } catch (err) {
@@ -1464,12 +1567,17 @@ ${cdir}/
 
   $('importForm').addEventListener('submit', async (e) => {
     e.preventDefault();
+    const nic = $('impPhysicalNIC').value.trim();
+    if (!nic) {
+      toast('未检测到已开启 OVS 的网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS', 'err');
+      return;
+    }
     try {
       const task = await apiFetch('/api/containers/import', {
         method: 'POST',
         body: JSON.stringify({
           config_path: $('impConfigPath').value.trim(),
-          physical_nic: $('impPhysicalNIC').value,
+          physical_nic: nic,
           apply_autostart: $('impApplyAutostart').checked,
           start_now: $('impStartNow').checked,
         }),

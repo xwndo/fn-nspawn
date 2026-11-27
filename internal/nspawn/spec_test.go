@@ -544,3 +544,59 @@ func TestStandardBaseRootScanAndMigrateFlags(t *testing.T) {
 		t.Fatalf("expected extrabox InStandardRoot=false & CanMigrateToStandard=true, got %+v", c.Config)
 	}
 }
+
+func TestDefaultAppConfigHasNoHardcodedNIC(t *testing.T) {
+	def := config.DefaultAppConfig()
+	if def.DefaultPhysicalNIC != "" {
+		t.Fatalf("expected empty DefaultPhysicalNIC by default, got %q", def.DefaultPhysicalNIC)
+	}
+	tmp := t.TempDir()
+	store, err := config.NewStore(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(config.AppConfig{StandardBaseRoot: "/vol1/nspawn"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.Get().DefaultPhysicalNIC; got != "" {
+		t.Fatalf("expected empty DefaultPhysicalNIC after Save when unset, got %q", got)
+	}
+}
+
+func TestBuildDebootstrapArgs(t *testing.T) {
+	args, fb := buildDebootstrapArgs("debian", "bookworm", "amd64", "/vol1/nspawn/box/rootfs", "https://mirrors.ustc.edu.cn/debian", true, true, false)
+	if fb != "" {
+		t.Fatalf("expected no fallback script when suite script exists, got %q", fb)
+	}
+	want := []string{"--arch=amd64", "--include=ca-certificates", "bookworm", "/vol1/nspawn/box/rootfs", "https://mirrors.ustc.edu.cn/debian"}
+	if len(args) != len(want) {
+		t.Fatalf("unexpected args length: got %v, want %v", args, want)
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q (full: %v)", i, args[i], want[i], args)
+		}
+	}
+
+	argsUbuntu, fbUbuntu := buildDebootstrapArgs("ubuntu", "noble", "amd64", "/vol1/nspawn/ubox/rootfs", "https://mirrors.ustc.edu.cn/ubuntu", false, true, true)
+	if fbUbuntu != "/usr/share/debootstrap/scripts/gutsy" {
+		t.Fatalf("expected gutsy fallback script, got %q", fbUbuntu)
+	}
+	wantUbuntu := []string{"--arch=amd64", "--include=ca-certificates", "--no-check-gpg", "noble", "/vol1/nspawn/ubox/rootfs", "https://mirrors.ustc.edu.cn/ubuntu", "/usr/share/debootstrap/scripts/gutsy"}
+	if len(argsUbuntu) != len(wantUbuntu) {
+		t.Fatalf("unexpected ubuntu args length: got %v, want %v", argsUbuntu, wantUbuntu)
+	}
+	for i := range wantUbuntu {
+		if argsUbuntu[i] != wantUbuntu[i] {
+			t.Fatalf("ubuntu args[%d] = %q, want %q (full: %v)", i, argsUbuntu[i], wantUbuntu[i], argsUbuntu)
+		}
+	}
+
+	argsDeb, fbDeb := buildDebootstrapArgs("debian", "trixie", "arm64", "/vol1/nspawn/tbox/rootfs", "https://mirrors.ustc.edu.cn/debian", false, true, false)
+	if fbDeb != "/usr/share/debootstrap/scripts/sid" {
+		t.Fatalf("expected sid fallback script, got %q", fbDeb)
+	}
+	if argsDeb[len(argsDeb)-1] != "/usr/share/debootstrap/scripts/sid" {
+		t.Fatalf("expected trailing sid script, got %v", argsDeb)
+	}
+}

@@ -4,15 +4,32 @@ export PATH="/usr/local/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 chmod 755 "${TRIM_APPDEST}/bin/fn-nspawn" 2>/dev/null || true
 mkdir -p "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
 
+detect_ovs_nic() {
+    command -v ovs-vsctl >/dev/null 2>&1 || return 0
+    local nic
+    for dev in /sys/class/net/*; do
+        [ -e "$dev" ] || continue
+        nic="$(basename "$dev")"
+        case "$nic" in
+            lo|ovs-system|veth*|ve-*|docker*|br-*) continue ;;
+        esac
+        if ovs-vsctl port-to-br "$nic" >/dev/null 2>&1; then
+            echo "$nic"
+            return 0
+        fi
+    done
+}
+
 CFG_FILE="${TRIM_PKGETC}/config.json"
 if [ ! -f "$CFG_FILE" ] && [ -n "${wizard_base_root:-}" ]; then
+    DEFAULT_NIC="$(detect_ovs_nic)"
     cat > "$CFG_FILE" <<EOF
 {
   "standard_base_root": "${wizard_base_root}",
   "base_roots": [
     "${wizard_base_root}"
   ],
-  "default_physical_nic": "enp2s0",
+  "default_physical_nic": "${DEFAULT_NIC}",
   "default_mirror": "https://mirrors.ustc.edu.cn/debian",
   "default_security_mirror": "https://mirrors.ustc.edu.cn/debian-security",
   "default_suite": "trixie",

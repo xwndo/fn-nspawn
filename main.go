@@ -35,7 +35,10 @@ func main() {
 	tasks := nspawn.NewTaskManager()
 	mgr := nspawn.NewManager(cfgStore, tasks)
 	if !*devMode {
-		go mgr.ReconcileOnStartup()
+		go func() {
+			mgr.EnsureDefaultOVSNIC()
+			mgr.ReconcileOnStartup()
+		}()
 	}
 	srv := server.New(cfgStore, mgr, web.StaticFS(), *devMode)
 

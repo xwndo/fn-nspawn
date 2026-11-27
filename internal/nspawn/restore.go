@@ -266,6 +266,12 @@ func (m *Manager) StartImportTask(req ImportContainerRequest) (*TaskRecord, erro
 	if nic := strings.TrimSpace(req.PhysicalNIC); nic != "" {
 		spec.Network.PhysicalNIC = nic
 	}
+	if strings.TrimSpace(spec.Network.PhysicalNIC) == "" {
+		spec.Network.PhysicalNIC = m.PreferredOVSNIC()
+	}
+	if strings.TrimSpace(spec.Network.PhysicalNIC) == "" {
+		return nil, fmt.Errorf("未检测到已开启 OVS 的物理网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS")
+	}
 	if err := exec.Command("ip", "link", "show", spec.Network.PhysicalNIC).Run(); err != nil {
 		return nil, fmt.Errorf("找不到物理网卡 %s（重装系统后网卡名如有变化，请在导入弹窗中重新选择）", spec.Network.PhysicalNIC)
 	}

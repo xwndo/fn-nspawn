@@ -45,6 +45,8 @@
     <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99"/></symbol>
     <symbol id="i-plus-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v6m3-3H9m12 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z"/></symbol>
     <symbol id="i-folder-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m9 13.5 3 3m0 0 3-3m-3 3v-6m1.06-4.19-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9a2.25 2.25 0 0 0-2.25-2.25h-5.379a1.5 1.5 0 0 1-1.06-.44Z"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z"/><path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"/></symbol>
+    <symbol id="i-eye-slash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88"/></symbol>
   </svg>
   <div class="app-shell">
     <!-- 主工作区 -->
@@ -125,6 +127,15 @@
 
       <!-- 右侧详情面板 -->
       <main class="main-panel" id="mainPanel">
+        <div class="ovs-alert-banner" id="ovsNoticeBanner" hidden role="alert">
+          <div class="ovs-alert-info">
+            <strong id="ovsNoticeTitle">未检测到已开启 OVS 的物理网卡</strong>
+            <div class="muted" id="ovsNoticeDesc">容器需要通过 Open vSwitch (OVS) 网桥获取独立局域网 IP。请前往飞牛 NAS「系统设置 → 网络设置」为物理网卡开启 OVS，完成后点击右侧重新检测。</div>
+          </div>
+          <div class="ovs-alert-actions">
+            <button type="button" class="btn btn-sm btn-warning" id="btnRecheckOVS">重新检测 OVS</button>
+          </div>
+        </div>
         <div class="empty-state-wrap" id="emptyState">
           <div class="empty-state-card">
             <div class="empty-emblem" aria-hidden="true">
@@ -412,13 +423,11 @@
           </div>
           <div class="form-field">
             <label id="newPasswordLabel">用户密码 *</label>
-            <input type="password" id="newPassword" required placeholder="在线构建必填；镜像导入留空则沿用原密码" />
-          </div>
-          <div class="form-field form-field-span-2">
-            <label>存储根目录 (Btrfs) *</label>
-            <div class="input-with-btn">
-              <input type="text" id="newBaseRoot" required placeholder="/vol1/nspawn" />
-              <button type="button" class="btn btn-ghost" id="btnBrowseBaseRoot">浏览</button>
+            <div class="password-input-wrap">
+              <input type="password" id="newPassword" required placeholder="在线构建必填；镜像导入留空则沿用原密码" />
+              <button type="button" class="password-toggle-btn" id="btnToggleNewPassword" title="显示密码" aria-label="显示密码" aria-pressed="false">
+                <svg class="btn-inline-svg" viewBox="0 0 24 24" aria-hidden="true"><use id="newPasswordEyeUse" href="#i-eye"/></svg>
+              </button>
             </div>
           </div>
         </div>
@@ -807,7 +816,7 @@
           <div style="min-width:0;flex:1;">
             <div class="row-gap" style="flex-wrap:wrap;">
               <strong style="font-size:16px;">nspawn容器</strong>
-              <span class="pill pill-ok" id="aboutVersion">v1.3.3</span>
+              <span class="pill pill-ok" id="aboutVersion">v1.3.5</span>
             </div>
             <div class="muted" style="margin-top:2px;">飞牛 fnOS 原生 systemd-nspawn + OVS + Btrfs 系统容器可视化管理器</div>
           </div>

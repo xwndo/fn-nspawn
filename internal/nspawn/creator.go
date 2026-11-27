@@ -62,14 +62,23 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 			return nil, fmt.Errorf("镜像文件不存在或不是文件: %s", req.SourceArchive)
 		}
 	}
-	if req.BaseRoot == "" || req.BaseRoot == "." {
-		req.BaseRoot = filepath.Clean(m.cfgStore.Get().StandardBaseRoot)
+	// Always store newly created containers in the configured StandardBaseRoot for layout consistency.
+	stdBase := filepath.Clean(strings.TrimSpace(m.cfgStore.Get().StandardBaseRoot))
+	if stdBase == "" || stdBase == "." {
+		stdBase = "/vol1/nspawn"
 	}
-	if req.BaseRoot == "" || req.BaseRoot == "." || !filepath.IsAbs(req.BaseRoot) {
-		return nil, fmt.Errorf("存储根目录必须是绝对路径")
+	req.BaseRoot = stdBase
+	if !filepath.IsAbs(req.BaseRoot) {
+		return nil, fmt.Errorf("存储根目录必须是绝对路径: %s", req.BaseRoot)
 	}
 	if req.PhysicalNIC == "" {
 		req.PhysicalNIC = m.cfgStore.Get().DefaultPhysicalNIC
+	}
+	if req.PhysicalNIC == "" {
+		req.PhysicalNIC = m.PreferredOVSNIC()
+	}
+	if req.PhysicalNIC == "" {
+		return nil, fmt.Errorf("未检测到已开启 OVS 的物理网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS")
 	}
 	if req.TmpSize == "" {
 		req.TmpSize = "4G"
@@ -139,6 +148,28 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	return task, nil
 }
 
+func buildDebootstrapArgs(distro, suite, arch, rootfs, mirror string, suiteScriptExists, fallbackScriptExists, noCheckGPG bool) ([]string, string) {
+	args := []string{
+		"--arch=" + arch,
+		"--include=ca-certificates",
+	}
+	if noCheckGPG {
+		args = append(args, "--no-check-gpg")
+	}
+	args = append(args, suite, rootfs, mirror)
+
+	fallbackName := "sid"
+	if strings.EqualFold(distro, "ubuntu") {
+		fallbackName = "gutsy"
+	}
+	fallbackScript := "/usr/share/debootstrap/scripts/" + fallbackName
+	if !suiteScriptExists && fallbackScriptExists {
+		args = append(args, fallbackScript)
+		return args, fallbackScript
+	}
+	return args, ""
+}
+
 func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths StandardPaths, veth string) {
 	var taskErr error
 	rootfsCreated := false
@@ -159,7 +190,13 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 	defer func() {
 		cleanupMounts()
 		if taskErr != nil && rootfsCreated {
-			m.tasks.AppendLog(taskID, fmt.Sprintf("[INFO] 已保留未完成的 rootfs: %s（确认无用后可手动执行 btrfs subvolume delete）", paths.Rootfs))
+			if _, statErr := os.Stat(filepath.Join(paths.Rootfs, "etc")); os.IsNotExist(statErr) {
+				_ = exec.Command("btrfs", "subvolume", "delete", paths.Rootfs).Run()
+				_ = os.RemoveAll(paths.ContainerDir)
+				m.tasks.AppendLog(taskID, fmt.Sprintf("[INFO] 构建在写入系统前中止，已自动清理空的残留目录: %s（可直接同名重试）", paths.ContainerDir))
+			} else {
+				m.tasks.AppendLog(taskID, fmt.Sprintf("[INFO] 已保留未完成的 rootfs: %s（确认无用后可手动执行 btrfs subvolume delete）", paths.Rootfs))
+			}
 		}
 		m.tasks.Finish(taskID, taskErr)
 	}()
@@ -267,9 +304,43 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 			_ = exec.Command("chroot", paths.Rootfs, "usermod", "-aG", "sudo", req.ContainerUser).Run()
 		}
 	} else {
-		// 3b. Run debootstrap
+		// 3b. Run debootstrap (compatible with newer Ubuntu/Debian suites on older Debian hosts)
+		noCheckGPG := false
+		if req.Distro == "ubuntu" {
+			const ubuntuKeyring = "/usr/share/keyrings/ubuntu-archive-keyring.gpg"
+			if _, err := os.Stat(ubuntuKeyring); err != nil {
+				logFn("[INFO] 宿主机缺少 ubuntu-archive-keyring，尝试自动安装...")
+				_ = runStreamCmd(logFn, nil, "apt-get", "update")
+				if err := runStreamCmd(logFn, []string{"DEBIAN_FRONTEND=noninteractive"},
+					"apt-get", "install", "-y", "ubuntu-archive-keyring"); err != nil {
+					logFn("[WARN] 安装 ubuntu-archive-keyring 未成功: " + err.Error())
+				}
+				if _, err := os.Stat(ubuntuKeyring); err != nil {
+					noCheckGPG = true
+					logFn("[WARN] 未找到 Ubuntu GPG 密钥环，将使用 --no-check-gpg 继续引导 Ubuntu 根文件系统")
+				}
+			}
+		}
+
+		suiteScriptPath := filepath.Join("/usr/share/debootstrap/scripts", req.Suite)
+		_, suiteErr := os.Stat(suiteScriptPath)
+		fallbackName := "sid"
+		if req.Distro == "ubuntu" {
+			fallbackName = "gutsy"
+		}
+		fallbackPath := filepath.Join("/usr/share/debootstrap/scripts", fallbackName)
+		_, fallbackErr := os.Stat(fallbackPath)
+
+		debootstrapArgs, usedFallback := buildDebootstrapArgs(
+			req.Distro, req.Suite, req.Arch, paths.Rootfs, req.Mirror,
+			suiteErr == nil, fallbackErr == nil, noCheckGPG,
+		)
+		if usedFallback != "" {
+			logFn(fmt.Sprintf("[INFO] 宿主机 debootstrap 未收录 %s 脚本，自动使用兼容脚本: %s", req.Suite, usedFallback))
+		}
+
 		logFn(fmt.Sprintf("3. 执行 debootstrap (%s/%s %s)...", req.Distro, req.Suite, req.Arch))
-		if err := runStreamCmd(logFn, nil, "debootstrap", "--arch="+req.Arch, req.Suite, paths.Rootfs, req.Mirror); err != nil {
+		if err := runStreamCmd(logFn, nil, "debootstrap", debootstrapArgs...); err != nil {
 			taskErr = fmt.Errorf("debootstrap 失败: %v", err)
 			return
 		}

@@ -65,6 +65,12 @@ func (m *Manager) StartMigrateTask(machine string, req MigrateContainerRequest) 
 	if nic == "" {
 		nic = appCfg.DefaultPhysicalNIC
 	}
+	if nic == "" {
+		nic = m.PreferredOVSNIC()
+	}
+	if nic == "" {
+		return nil, fmt.Errorf("未检测到已开启 OVS 的物理网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS")
+	}
 	if err := exec.Command("ip", "link", "show", nic).Run(); err != nil {
 		return nil, fmt.Errorf("找不到物理网卡 %s，请在迁移窗口中重新选择", nic)
 	}
