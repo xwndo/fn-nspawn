@@ -307,10 +307,14 @@
             <div class="card">
               <div class="card-title-row">
                 <div>
-                  <div class="card-title">Btrfs 子卷快照</div>
+                  <div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span>Btrfs 子卷快照</span>
+                    <span class="pill" id="snapAutoBadge">自动: 未开启</span>
+                  </div>
                   <div class="muted" id="snapDirHint">-</div>
                 </div>
                 <div class="row-gap">
+                  <button class="btn btn-ghost btn-sm" id="btnSnapSchedule">定时策略</button>
                   <button class="btn btn-ghost btn-sm" id="btnRefreshSnaps">刷新</button>
                   <button class="btn btn-primary btn-sm" id="btnOpenNewSnap">+ 创建快照</button>
                 </div>
@@ -336,10 +340,14 @@
             <div class="card">
               <div class="card-title-row">
                 <div>
-                  <div class="card-title">容器镜像归档（用于备份迁移与新建容器导入）</div>
+                  <div class="card-title" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                    <span>容器镜像归档（用于备份迁移与新建容器导入）</span>
+                    <span class="pill" id="exportAutoBadge">自动: 未开启</span>
+                  </div>
                   <div class="muted" id="imageDirHint">-</div>
                 </div>
                 <div class="row-gap">
+                  <button class="btn btn-ghost btn-sm" id="btnExportSchedule">定时策略</button>
                   <button class="btn btn-ghost btn-sm" id="btnRefreshImages">刷新</button>
                   <button class="btn btn-primary btn-sm" id="btnOpenExportImage">+ 导出 Rootfs 镜像</button>
                 </div>
@@ -409,8 +417,9 @@
           <div class="form-field">
             <label>创建方式 *</label>
             <select id="newSourceType">
-              <option value="debootstrap">在线构建 (debootstrap)</option>
-              <option value="archive">从本地 Rootfs 镜像导入 (.tar.gz / .tar.zst)</option>
+              <option value="online_image">在线系统镜像库（清华 / 中科大 · 推荐）</option>
+              <option value="debootstrap">在线构建 (debootstrap · Debian / Ubuntu)</option>
+              <option value="archive">从本地 Rootfs 镜像导入 (.tar.gz / .tar.zst / .tar.xz)</option>
             </select>
           </div>
           <div class="form-field">
@@ -432,10 +441,36 @@
           </div>
         </div>
 
+        <div id="newOnlineImageGroup" style="margin-top:12px;">
+          <div class="form-grid">
+            <div class="form-field form-field-span-2">
+              <label>系统镜像源（国内高速直连）</label>
+              <div class="input-with-btn">
+                <select id="newOnlineSource" style="flex:1;min-width:0;">
+                  <option value="tuna">清华大学 TUNA 镜像站 (LXC Images)</option>
+                  <option value="ustc">中科大 USTC 镜像站 (Proxmox 系统模板)</option>
+                  <option value="bfsu">北京外国语大学 BFSU 镜像站 (LXC Images)</option>
+                  <option value="official">Linux Containers 官方源 (images.linuxcontainers.org)</option>
+                </select>
+                <button type="button" class="btn btn-ghost" id="btnRefreshOnlineImages">刷新目录</button>
+              </div>
+            </div>
+            <div class="form-field">
+              <label>Linux 发行版 *</label>
+              <select id="newOnlineDistro"></select>
+            </div>
+            <div class="form-field">
+              <label>系统版本 *</label>
+              <select id="newOnlineRelease"></select>
+            </div>
+          </div>
+          <div class="online-meta-hint" id="newOnlineMeta">正在加载在线系统镜像列表...</div>
+        </div>
+
         <div id="newArchiveGroup" class="form-field" style="margin-top:12px;" hidden>
           <label>本地 Rootfs 镜像归档路径 *</label>
           <div class="input-with-btn">
-            <input type="text" id="newSourceArchive" placeholder="/vol1/.../images/exports/xxx.tar.gz" />
+            <input type="text" id="newSourceArchive" placeholder="/vol1/.../images/exports/xxx.tar.gz / .tar.zst / .tar.xz" />
             <button type="button" class="btn btn-ghost" id="btnBrowseArchive">选择镜像文件</button>
           </div>
         </div>
@@ -622,6 +657,79 @@
         <div class="modal-footer">
           <button type="button" class="btn btn-ghost" data-close="snapModal">取消</button>
           <button type="submit" class="btn btn-primary">立即创建</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 定时快照/镜像备份策略弹窗 -->
+  <div class="modal-backdrop" id="backupScheduleModal" hidden>
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="bsModalTitle">定时备份策略</h3>
+        <button class="modal-close" data-close="backupScheduleModal">&times;</button>
+      </div>
+      <form id="backupScheduleForm" class="modal-body">
+        <p class="muted" style="margin-top:0;">策略会写入容器独立目录的 <code>config/container.json</code>；重装系统或迁移磁盘导入容器后将自动恢复调度，且只清理同标签定时任务产生的旧版本，<strong>不会删除您的手动快照/归档</strong>。</p>
+        <div class="checkbox-row" style="margin-top:4px;margin-bottom:12px;">
+          <label><input type="checkbox" id="bsEnabled" /> 启用此定时备份策略</label>
+        </div>
+        <div class="form-grid">
+          <div class="form-field">
+            <label>触发周期预设</label>
+            <select id="bsPreset">
+              <option value="0 3 * * *">每天凌晨 03:00 (0 3 * * *)</option>
+              <option value="0 */6 * * *">每 6 小时整点 (0 */6 * * *)</option>
+              <option value="0 4 * * 0">每周日凌晨 04:00 (0 4 * * 0)</option>
+              <option value="0 4 1 * *">每月 1 日凌晨 04:00 (0 4 1 * *)</option>
+              <option value="custom">自定义 5 段 Cron 表达式</option>
+            </select>
+          </div>
+          <div class="form-field">
+            <label>Cron 表达式 (分 时 日 月 周) *</label>
+            <input type="text" id="bsCron" required placeholder="0 3 * * *" />
+          </div>
+          <div class="form-field">
+            <label>专属任务标签 (用于隔离版本清理) *</label>
+            <input type="text" id="bsTag" value="auto" required />
+          </div>
+          <div class="form-field">
+            <label>保留最新份数 (0 = 不限份数)</label>
+            <input type="number" id="bsKeepCount" min="0" max="999" value="7" />
+          </div>
+          <div class="form-field">
+            <label>最长保留天数 (0 = 不按天过期)</label>
+            <input type="number" id="bsKeepDays" min="0" max="3650" value="0" />
+          </div>
+        </div>
+        <div class="online-meta-hint" id="bsCronPreview">等待校验 Cron 表达式...</div>
+
+        <div id="bsSnapOpts" class="checkbox-col" style="margin-top:12px;">
+          <label><input type="checkbox" id="bsReadOnly" checked /> 创建为只读快照 (-r，推荐用于基线与回滚)</label>
+          <label><input type="checkbox" id="bsSnapStopFirst" /> 创建前先暂停容器（Btrfs 快照本身瞬间一致，通常无需停机）</label>
+        </div>
+
+        <div id="bsExportOpts" style="margin-top:12px;" hidden>
+          <div class="form-field">
+            <label>归档压缩格式</label>
+            <select id="bsFormat">
+              <option value="tar.zst">.tar.zst (zstd 高速压缩)</option>
+              <option value="tar.gz">.tar.gz (通用 gzip)</option>
+            </select>
+          </div>
+          <div class="checkbox-col">
+            <label><input type="checkbox" id="bsExportStopFirst" /> 打包前先停止容器（非 Btrfs 时推荐勾选）</label>
+          </div>
+        </div>
+
+        <div class="schedule-status-box" id="bsStatusBox">暂无执行记录</div>
+
+        <div class="modal-footer" style="justify-content:space-between;">
+          <button type="button" class="btn btn-ghost" id="btnRunBackupNow">立即执行一次</button>
+          <div class="row-gap">
+            <button type="button" class="btn btn-ghost" data-close="backupScheduleModal">取消</button>
+            <button type="submit" class="btn btn-primary">保存策略</button>
+          </div>
         </div>
       </form>
     </div>
@@ -816,7 +924,7 @@
           <div style="min-width:0;flex:1;">
             <div class="row-gap" style="flex-wrap:wrap;">
               <strong style="font-size:16px;">nspawn容器</strong>
-              <span class="pill pill-ok" id="aboutVersion">v1.3.6</span>
+              <span class="pill pill-ok" id="aboutVersion">v1.4.2</span>
             </div>
             <div class="muted" style="margin-top:2px;">飞牛 fnOS 原生 systemd-nspawn + OVS + Btrfs 系统容器可视化管理器</div>
           </div>

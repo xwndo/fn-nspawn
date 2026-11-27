@@ -30,6 +30,15 @@
     activeTab: 'overview',
     metricsPrev: {},
     liveStats: {},
+    backupInfo: null,
+    backupModalKind: 'snapshot',
+    onlineCatalog: {
+      source: '',
+      arch: '',
+      images: [],
+      loading: false,
+      error: '',
+    },
   };
 
   const $ = (id) => document.getElementById(id);
@@ -141,6 +150,33 @@
     if (hint.includes('debian')) {
       return '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#D70A53" d="M12.7 3.2c-4.5-.3-8.5 3-8.8 7.5-.3 4.8 3.3 9.2 8.2 9.9.9.1 1.1-.6.4-.9-2.8-1-5.1-3.8-4.9-7.1.2-3.4 2.9-6 6.2-5.8 2.6.2 4.5 2.2 4.3 4.6-.1 2-1.8 3.4-3.7 3.3-1.4-.1-2.4-1.2-2.3-2.5.1-.9.9-1.6 1.8-1.5.5 0 .9.3 1 .8.1.4.7.4.9 0 .3-.8-.3-1.9-1.4-2.1-1.6-.3-3.2.9-3.4 2.6-.3 2.3 1.5 4.3 3.9 4.5 3 .2 5.7-2 5.9-5.1.3-4-2.7-7.9-8.1-8.3z"/></svg>';
     }
+    if (hint.includes('arch')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#1793D1" d="M12 3c-.9 2.3-1.7 3.9-2.7 5.8.9.9 2 1.8 3.5 2.7-1.6-.6-2.9-1.2-4-1.9C7.3 12.6 5.5 16.1 4 20.5c2.7-1.6 5-2.6 7-2.8-.1-.5-.2-1-.1-1.6.1-1.6.9-2.8 2-2.7 1 .1 1.7 1.3 1.6 2.9 0 .6-.2 1.1-.4 1.5 2 .3 4.2 1.3 6.9 2.7-1.6-4.4-3.8-9.2-9-17.5Z"/></svg>';
+    }
+    if (hint.includes('fedora')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="#51A2DA"/><path d="M13.6 7.5a2.6 2.6 0 0 0-2.6 2.6v4.3a2.2 2.2 0 1 1-2.2-2.2h4.2" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/><circle cx="15.8" cy="10.1" r="1.2" fill="#fff"/></svg>';
+    }
+    if (hint.includes('rocky')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="#10B981"/><path d="M7.5 15.5 12 7.5l4.5 8-2.2 1.8-2.3-4.1-2.3 4.1Z" fill="#fff"/></svg>';
+    }
+    if (hint.includes('alma')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="#0F4266"/><path d="M12 5.8v12.4M6.6 9l10.8 6M17.4 9 6.6 15" stroke="#38BDF8" stroke-width="2.1" stroke-linecap="round"/><circle cx="12" cy="12" r="2.2" fill="#FACC15"/></svg>';
+    }
+    if (hint.includes('centos')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7.2" height="7.2" rx="1.2" fill="#932279"/><rect x="12.8" y="4" width="7.2" height="7.2" rx="1.2" fill="#EFA724"/><rect x="4" y="12.8" width="7.2" height="7.2" rx="1.2" fill="#262577"/><rect x="12.8" y="12.8" width="7.2" height="7.2" rx="1.2" fill="#9CCD2A"/></svg>';
+    }
+    if (hint.includes('suse')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="#73BA25"/><path d="M8 13.5c0-2.6 2-4.5 4.6-4.5 2.1 0 3.7 1.3 3.7 3.1 0 1.6-1.2 2.8-2.8 2.8-.9 0-1.6-.6-1.6-1.4 0-.7.5-1.2 1.2-1.2" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>';
+    }
+    if (hint.includes('kali')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="#2671BE"/><path d="M7.5 14.5c2.2-3.5 5.4-5.4 9.5-5.8-2.3 1.7-3.6 3.5-4.3 5.8l3.2 1.2c-2.6.5-5.6.4-8.4-1.2Z" fill="#fff"/></svg>';
+    }
+    if (hint.includes('euler')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="#002FA7"/><path d="M8 9.2h8v2h-5.6v1.6h4.8v1.9h-4.8v1.7H16v2H8Z" fill="#fff"/></svg>';
+    }
+    if (hint.includes('openwrt')) {
+      return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9.5" fill="#00B5E2"/><path d="M7.8 9.5a6 6 0 0 1 8.4 0M9.8 12a3.2 3.2 0 0 1 4.4 0" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="15.2" r="1.6" fill="#fff"/></svg>';
+    }
     return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="4" fill="#334155"/><path d="M8 9.5l3 2.5-3 2.5M12.5 14.5h3.5" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
   }
 
@@ -189,6 +225,7 @@
     if (tab === 'snapshots' && state.selectedMachine) {
       loadSnapshots(state.selectedMachine);
       loadImages(state.selectedMachine);
+      loadBackupSchedule(state.selectedMachine);
     }
   });
 
@@ -394,7 +431,7 @@
   function renderAboutModal() {
     const h = state.host || {};
     const me = state.me || {};
-    const ver = h.app_version || '1.3.6';
+    const ver = h.app_version || '1.4.2';
     $('aboutVersion').textContent = `v${ver}`;
     const userDisplay = me.username || 'admin';
     const depPill = (ok) => ok
@@ -679,6 +716,7 @@
     syncTerminalView(machine);
     loadSnapshots(machine);
     loadImages(machine);
+    loadBackupSchedule(machine);
   }
 
   function getSelected() {
@@ -759,6 +797,8 @@
     $('btnOpenDelete').disabled = isExternal;
     $('btnOpenNewSnap').disabled = isExternal;
     $('btnOpenExportImage').disabled = isExternal;
+    $('btnSnapSchedule').disabled = isExternal;
+    $('btnExportSchedule').disabled = isExternal;
 
     // CPU & Memory probe metrics
     const cores = state.host?.cpu_cores || 1;
@@ -1238,6 +1278,222 @@ ${cdir}/
     });
   }
 
+  // Scheduled Backup (Cron snapshots & exports persisted in container.json)
+  function formatBackupBadge(rule) {
+    if (!rule || !rule.enabled) {
+      return { text: '自动: 未开启', cls: 'pill' };
+    }
+    const parts = [`自动: ${rule.cron}`];
+    if (rule.keep_count > 0) parts.push(`留${rule.keep_count}份`);
+    if (rule.keep_days > 0) parts.push(`${rule.keep_days}天`);
+    return { text: parts.join(' · '), cls: 'pill pill-ok' };
+  }
+
+  function renderBackupBadges() {
+    const snapBadge = $('snapAutoBadge');
+    const expBadge = $('exportAutoBadge');
+    const info = state.backupInfo;
+    if (snapBadge) {
+      const b = formatBackupBadge(info?.backup?.snapshot);
+      snapBadge.textContent = b.text;
+      snapBadge.className = b.cls;
+    }
+    if (expBadge) {
+      const b = formatBackupBadge(info?.backup?.export);
+      expBadge.textContent = b.text;
+      expBadge.className = b.cls;
+    }
+  }
+
+  async function loadBackupSchedule(machine) {
+    if (!machine) return;
+    try {
+      const res = await apiFetch(`/api/containers/${encodeURIComponent(machine)}/backup`);
+      if (state.selectedMachine === machine) {
+        state.backupInfo = res;
+        renderBackupBadges();
+      }
+    } catch (_) {
+      if (state.selectedMachine === machine) {
+        state.backupInfo = null;
+        renderBackupBadges();
+      }
+    }
+  }
+
+  let cronPreviewTimer = null;
+  async function updateCronPreview(expr) {
+    const el = $('bsCronPreview');
+    if (!el) return;
+    const trimmed = (expr || '').trim();
+    if (!trimmed) {
+      el.className = 'online-meta-hint is-error';
+      el.textContent = '请输入 5 段 Cron 表达式（分 时 日 月 周）';
+      return;
+    }
+    try {
+      const res = await apiFetch(`/api/cron/preview?expr=${encodeURIComponent(trimmed)}`);
+      if (!res.valid) {
+        el.className = 'online-meta-hint is-error';
+        el.textContent = `表达式无效: ${res.error || '格式错误'}`;
+        return;
+      }
+      const runs = res.next_runs || [];
+      el.className = 'online-meta-hint';
+      el.textContent = runs.length
+        ? `接下来预计执行时间：\n${runs.map((r, i) => `  ${i + 1}. ${r}`).join('\n')}`
+        : 'Cron 表达式合法';
+    } catch (err) {
+      el.className = 'online-meta-hint is-error';
+      el.textContent = `校验失败: ${err.message}`;
+    }
+  }
+
+  function syncBackupPresetFromCron(cronStr) {
+    const sel = $('bsPreset');
+    if (!sel) return;
+    const norm = (cronStr || '').trim();
+    const matched = Array.from(sel.options).some((opt) => opt.value === norm);
+    sel.value = matched ? norm : 'custom';
+  }
+
+  async function openBackupScheduleModal(kind) {
+    const machine = state.selectedMachine;
+    if (!machine) return;
+    await loadBackupSchedule(machine);
+    const info = state.backupInfo || {};
+    const b = info.backup || {};
+    state.backupModalKind = kind;
+    const isSnap = kind === 'snapshot';
+    const rule = isSnap
+      ? (b.snapshot || { enabled: false, cron: '0 3 * * *', tag: 'auto', read_only: true, stop_first: false, keep_count: 7, keep_days: 0 })
+      : (b.export || { enabled: false, cron: '0 4 * * 0', tag: 'auto', format: 'tar.zst', stop_first: false, keep_count: 3, keep_days: 0 });
+    const status = isSnap ? (info.snapshot_status || {}) : (info.export_status || {});
+
+    $('bsModalTitle').textContent = isSnap ? `定时 Btrfs 快照策略 (${machine})` : `定时 Rootfs 镜像归档策略 (${machine})`;
+    $('bsEnabled').checked = !!rule.enabled;
+    $('bsCron').value = rule.cron || (isSnap ? '0 3 * * *' : '0 4 * * 0');
+    syncBackupPresetFromCron($('bsCron').value);
+    $('bsTag').value = rule.tag || 'auto';
+    $('bsKeepCount').value = String(rule.keep_count ?? (isSnap ? 7 : 3));
+    $('bsKeepDays').value = String(rule.keep_days ?? 0);
+
+    $('bsSnapOpts').hidden = !isSnap;
+    $('bsExportOpts').hidden = isSnap;
+    if (isSnap) {
+      $('bsReadOnly').checked = rule.read_only !== false;
+      $('bsSnapStopFirst').checked = !!rule.stop_first;
+    } else {
+      $('bsFormat').value = rule.format || 'tar.zst';
+      const zstdOpt = $('bsFormat').querySelector('option[value="tar.zst"]');
+      if (zstdOpt && state.host) {
+        zstdOpt.disabled = !state.host.has_zstd;
+        zstdOpt.textContent = state.host.has_zstd ? '.tar.zst (zstd 高速压缩)' : '.tar.zst (宿主机未安装 zstd)';
+        if (!state.host.has_zstd && $('bsFormat').value === 'tar.zst') {
+          $('bsFormat').value = 'tar.gz';
+        }
+      }
+      $('bsExportStopFirst').checked = !!rule.stop_first;
+    }
+
+    const stBox = $('bsStatusBox');
+    if (status.last_run_at) {
+      const badge = status.last_status === 'success' ? '成功' : '失败';
+      const detail = status.last_status === 'success' ? (status.last_summary || '已完成') : (status.last_error || '未知错误');
+      stBox.textContent = `上次执行: ${status.last_run_at} · 结果: ${badge}（${detail}）`;
+    } else {
+      stBox.textContent = '本次运行周期内尚无执行记录；保存后将由内置轻量调度器自动按 Cron 触发。';
+    }
+
+    openModal('backupScheduleModal');
+    updateCronPreview($('bsCron').value);
+  }
+
+  $('btnSnapSchedule').addEventListener('click', () => openBackupScheduleModal('snapshot'));
+  $('btnExportSchedule').addEventListener('click', () => openBackupScheduleModal('export'));
+
+  $('bsPreset').addEventListener('change', (e) => {
+    if (e.target.value !== 'custom') {
+      $('bsCron').value = e.target.value;
+      updateCronPreview($('bsCron').value);
+    }
+  });
+
+  $('bsCron').addEventListener('input', () => {
+    syncBackupPresetFromCron($('bsCron').value);
+    clearTimeout(cronPreviewTimer);
+    cronPreviewTimer = setTimeout(() => updateCronPreview($('bsCron').value), 220);
+  });
+
+  function collectBackupFormPayload() {
+    const machine = state.selectedMachine;
+    const prev = state.backupInfo?.backup || {};
+    const next = {
+      snapshot: prev.snapshot ? { ...prev.snapshot } : { enabled: false, cron: '0 3 * * *', tag: 'auto', read_only: true, keep_count: 7, keep_days: 0 },
+      export: prev.export ? { ...prev.export } : { enabled: false, cron: '0 4 * * 0', tag: 'auto', format: 'tar.zst', keep_count: 3, keep_days: 0 },
+    };
+    const common = {
+      enabled: $('bsEnabled').checked,
+      cron: $('bsCron').value.trim(),
+      tag: $('bsTag').value.trim() || 'auto',
+      keep_count: Math.max(0, parseInt($('bsKeepCount').value || '0', 10) || 0),
+      keep_days: Math.max(0, parseInt($('bsKeepDays').value || '0', 10) || 0),
+    };
+    if (state.backupModalKind === 'snapshot') {
+      next.snapshot = {
+        ...common,
+        read_only: $('bsReadOnly').checked,
+        stop_first: $('bsSnapStopFirst').checked,
+      };
+    } else {
+      next.export = {
+        ...common,
+        format: $('bsFormat').value,
+        stop_first: $('bsExportStopFirst').checked,
+      };
+    }
+    return { machine, next };
+  }
+
+  $('backupScheduleForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const { machine, next } = collectBackupFormPayload();
+    if (!machine) return;
+    try {
+      const res = await apiFetch(`/api/containers/${encodeURIComponent(machine)}/backup`, {
+        method: 'PUT',
+        body: JSON.stringify(next),
+      });
+      state.backupInfo = res;
+      renderBackupBadges();
+      closeModal('backupScheduleModal');
+      toast('定时策略已保存到 container.json 并生效');
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+
+  $('btnRunBackupNow').addEventListener('click', async () => {
+    const { machine, next } = collectBackupFormPayload();
+    if (!machine) return;
+    try {
+      state.backupInfo = await apiFetch(`/api/containers/${encodeURIComponent(machine)}/backup`, {
+        method: 'PUT',
+        body: JSON.stringify(next),
+      });
+      renderBackupBadges();
+      const task = await apiFetch(`/api/containers/${encodeURIComponent(machine)}/backup/run`, {
+        method: 'POST',
+        body: JSON.stringify({ kind: state.backupModalKind }),
+      });
+      closeModal('backupScheduleModal');
+      toast('已保存策略并立即触发执行');
+      openTaskMonitor(task.id);
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  });
+
   $('btnRefreshImages').addEventListener('click', () => state.selectedMachine && loadImages(state.selectedMachine));
   $('btnOpenExportImage').addEventListener('click', () => {
     const sel = $('expImgSource');
@@ -1335,16 +1591,162 @@ ${cdir}/
 └── images/              (snapshots/ + exports/)`;
   }
 
+  function getTargetImageArch() {
+    const a = (state.host?.arch || '').toLowerCase();
+    return a === 'arm64' || a === 'aarch64' ? 'arm64' : 'amd64';
+  }
+
+  function getSelectedOnlineImage() {
+    const id = $('newOnlineRelease')?.value || '';
+    return (state.onlineCatalog.images || []).find((it) => it.id === id) || null;
+  }
+
+  function renderOnlineMeta() {
+    const metaEl = $('newOnlineMeta');
+    if (!metaEl) return;
+    if (state.onlineCatalog.loading) {
+      metaEl.className = 'online-meta-hint';
+      metaEl.textContent = '正在拉取在线系统镜像目录，请稍候...';
+      return;
+    }
+    if (state.onlineCatalog.error) {
+      metaEl.className = 'online-meta-hint is-error';
+      metaEl.textContent = `加载失败：${state.onlineCatalog.error}（可切换其它镜像源或点击“刷新目录”重试）`;
+      return;
+    }
+    const item = getSelectedOnlineImage();
+    if (!item) {
+      metaEl.className = 'online-meta-hint';
+      metaEl.textContent = '当前镜像源暂无适配本机架构的系统镜像';
+      return;
+    }
+    const sizeText = item.size_bytes > 0 ? formatBytes(item.size_bytes) : '流式下载';
+    const cacheText = item.cached ? ' · 已缓存到本地（秒级创建）' : ' · 首次创建将自动下载并缓存';
+    const owHint = item.distro === 'openwrt'
+      ? ' ｜ OpenWrt 模式：procd + /dev/net/tun，host0 DHCP 客户端（已默认关闭 LAN DHCP Server 防冲突）'
+      : '';
+    metaEl.className = 'online-meta-hint';
+    metaEl.textContent = `镜像文件: ${item.filename} · 架构: ${item.arch} · 大小: ${sizeText}${cacheText}${owHint}`;
+  }
+
+  function syncCreateUserForSource() {
+    const mode = $('newSourceType')?.value;
+    const isOnlineOpenWrt = mode === 'online_image' && $('newOnlineDistro')?.value === 'openwrt';
+    const userInput = $('newUser');
+    if (!userInput) return;
+    if (isOnlineOpenWrt) {
+      if (userInput.value !== 'root') {
+        userInput.dataset.prevUser = userInput.value || 'admin';
+      }
+      userInput.value = 'root';
+      userInput.readOnly = true;
+    } else {
+      if (userInput.readOnly) {
+        userInput.readOnly = false;
+        userInput.value = userInput.dataset.prevUser || 'admin';
+      }
+    }
+  }
+
+  function renderOnlineReleaseOptions() {
+    const distro = $('newOnlineDistro').value;
+    const relSel = $('newOnlineRelease');
+    const matches = (state.onlineCatalog.images || []).filter((it) => it.distro === distro);
+    if (!matches.length) {
+      relSel.innerHTML = '<option value="">无可用版本</option>';
+      relSel.value = '';
+    } else {
+      relSel.innerHTML = matches.map((it) => {
+        const sizeStr = it.size_bytes > 0 ? ` · ${formatBytes(it.size_bytes)}` : '';
+        const cacheTag = it.cached ? ' [已缓存]' : '';
+        const buildTag = it.build_version ? ` (${it.build_version})` : '';
+        return `<option value="${esc(it.id)}">${esc(it.release_title || it.release)}${esc(buildTag)}${esc(sizeStr)}${esc(cacheTag)}</option>`;
+      }).join('');
+      relSel.value = matches[0].id;
+    }
+    syncCreateUserForSource();
+    renderOnlineMeta();
+  }
+
+  function renderOnlineDistroOptions(preferredDistro = '') {
+    const distSel = $('newOnlineDistro');
+    const images = state.onlineCatalog.images || [];
+    const seen = new Set();
+    const distros = [];
+    images.forEach((it) => {
+      if (!seen.has(it.distro)) {
+        seen.add(it.distro);
+        distros.push({ distro: it.distro, label: it.distro_label || it.distro });
+      }
+    });
+    if (!distros.length) {
+      distSel.innerHTML = '<option value="">暂无可用发行版</option>';
+      distSel.value = '';
+      renderOnlineReleaseOptions();
+      return;
+    }
+    distSel.innerHTML = distros.map((d) => `<option value="${esc(d.distro)}">${esc(d.label)}</option>`).join('');
+    if (preferredDistro && seen.has(preferredDistro)) {
+      distSel.value = preferredDistro;
+    } else {
+      distSel.value = distros[0].distro;
+    }
+    renderOnlineReleaseOptions();
+  }
+
+  async function loadOnlineCatalog(source = $('newOnlineSource')?.value || 'tuna', forceRefresh = false) {
+    const arch = getTargetImageArch();
+    const prevDistro = $('newOnlineDistro')?.value || '';
+    if (!forceRefresh && state.onlineCatalog.source === source && state.onlineCatalog.arch === arch && state.onlineCatalog.images.length > 0 && !state.onlineCatalog.error) {
+      renderOnlineDistroOptions(prevDistro);
+      return;
+    }
+    state.onlineCatalog.loading = true;
+    state.onlineCatalog.error = '';
+    state.onlineCatalog.source = source;
+    state.onlineCatalog.arch = arch;
+    renderOnlineMeta();
+    const btn = $('btnRefreshOnlineImages');
+    if (btn) btn.disabled = true;
+    try {
+      const q = `source=${encodeURIComponent(source)}&arch=${encodeURIComponent(arch)}${forceRefresh ? '&refresh=1' : ''}`;
+      const res = await apiFetch(`/api/images/online?${q}`);
+      state.onlineCatalog.images = res.images || [];
+      state.onlineCatalog.error = '';
+      renderOnlineDistroOptions(prevDistro);
+    } catch (err) {
+      state.onlineCatalog.images = [];
+      state.onlineCatalog.error = err.message || '网络请求失败';
+      renderOnlineDistroOptions();
+    } finally {
+      state.onlineCatalog.loading = false;
+      if (btn) btn.disabled = false;
+      renderOnlineMeta();
+    }
+  }
+
   function toggleCreateSourceFields() {
-    const isArchive = $('newSourceType').value === 'archive';
+    const mode = $('newSourceType').value;
+    const isOnline = mode === 'online_image';
+    const isDebootstrap = mode === 'debootstrap';
+    const isArchive = mode === 'archive';
+    $('newOnlineImageGroup').hidden = !isOnline;
     $('newArchiveGroup').hidden = !isArchive;
-    $('newDebootstrapGroup').hidden = isArchive;
-    $('newExtrasWrap').hidden = isArchive;
+    $('newDebootstrapGroup').hidden = !isDebootstrap;
+    $('newExtrasWrap').hidden = !isDebootstrap;
     $('newPassword').required = !isArchive;
     $('newPasswordLabel').textContent = isArchive ? '重置用户密码（留空沿用镜像原密码）' : '用户密码 *';
+    syncCreateUserForSource();
+    if (isOnline) {
+      loadOnlineCatalog($('newOnlineSource').value || 'tuna', false);
+    }
   }
 
   $('newSourceType').addEventListener('change', toggleCreateSourceFields);
+  $('newOnlineSource').addEventListener('change', () => loadOnlineCatalog($('newOnlineSource').value, false));
+  $('btnRefreshOnlineImages').addEventListener('click', () => loadOnlineCatalog($('newOnlineSource').value, true));
+  $('newOnlineDistro').addEventListener('change', renderOnlineReleaseOptions);
+  $('newOnlineRelease').addEventListener('change', renderOnlineMeta);
   $('newMachine').addEventListener('input', (e) => {
     const v = e.target.value.trim();
     $('vethPreview').textContent = v ? `(veth: ve-${v}, ${v.length + 3}/15 字符)` : '(veth: ve-...)';
@@ -1398,7 +1800,7 @@ ${cdir}/
   }
 
   function openCreateModalDefault() {
-    $('newSourceType').value = 'debootstrap';
+    $('newSourceType').value = 'online_image';
     $('newSourceArchive').value = '';
     prepareCreateModalDefaults();
     openModal('createModal');
@@ -1446,7 +1848,7 @@ ${cdir}/
 
   $('btnBrowseArchive').addEventListener('click', () => {
     openFSBrowser({
-      title: '选择 Rootfs 镜像归档 (.tar.gz / .tar.zst)',
+      title: '选择 Rootfs 镜像归档 (.tar.gz / .tar.zst / .tar.xz)',
       mode: 'archive',
       initialPath: $('newSourceArchive').value.trim() || getStandardBaseRoot(),
       onSelect: (p) => {
@@ -1462,8 +1864,9 @@ ${cdir}/
       toast('未检测到已开启 OVS 的网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS', 'err');
       return;
     }
+    const sourceType = $('newSourceType').value;
     const payload = {
-      source_type: $('newSourceType').value,
+      source_type: sourceType,
       source_archive: $('newSourceArchive').value.trim(),
       machine: $('newMachine').value.trim(),
       container_user: $('newUser').value.trim(),
@@ -1481,6 +1884,20 @@ ${cdir}/
       autostart: $('newAutostartBoot').checked,
       auto_start: $('newAutoStart').checked,
     };
+    if (sourceType === 'online_image') {
+      const item = getSelectedOnlineImage();
+      if (!item) {
+        toast('请先等待在线镜像列表加载完成，或切换/刷新有效系统镜像', 'err');
+        return;
+      }
+      payload.distro = item.distro;
+      payload.suite = item.release;
+      payload.online_source = item.source;
+      payload.online_release = item.release;
+      payload.online_image_url = item.url;
+      payload.online_image_sha256 = item.sha256 || '';
+      payload.online_image_filename = item.filename;
+    }
     try {
       const task = await apiFetch('/api/containers', {
         method: 'POST',
@@ -1803,7 +2220,10 @@ ${cdir}/
           : '请先选择一个容器';
       }
     }
-    $('termUser').value = (machine && state.termUsers[machine]) || session?.user || 'root';
+    const selectedItem = machine ? state.containers.find((c) => c.config.machine === machine) : null;
+    const isOpenWrt = selectedItem?.config?.init_mode === 'openwrt';
+    $('termUser').value = isOpenWrt ? 'root' : ((machine && state.termUsers[machine]) || session?.user || 'root');
+    $('termUser').disabled = !!isOpenWrt;
     $('termStatus').textContent = session ? session.statusText : '未连接';
     $('btnTermDisconnect').disabled = !(session && session.ws && (session.ws.readyState === WebSocket.OPEN || session.ws.readyState === WebSocket.CONNECTING));
 
@@ -2042,6 +2462,7 @@ ${cdir}/
       if (state.selectedMachine) {
         loadSnapshots(state.selectedMachine);
         loadImages(state.selectedMachine);
+        loadBackupSchedule(state.selectedMachine);
       }
     }
   }

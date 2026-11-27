@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"fn-nspawn/internal/config"
 )
@@ -618,5 +619,330 @@ func TestBuildChrootResolvConf(t *testing.T) {
 	}
 	if strings.Contains(content2, "127.0.0.53") || strings.Contains(content2, "::1") {
 		t.Fatalf("loopback nameserver leaked into chroot resolv.conf: %q", content2)
+	}
+}
+
+func TestParseSimpleStreamsCatalog(t *testing.T) {
+	raw := []byte(`{
+		"products": {
+			"debian:bookworm:amd64:default": {
+				"os": "Debian",
+				"release": "bookworm",
+				"release_title": "bookworm",
+				"arch": "amd64",
+				"variant": "default",
+				"versions": {
+					"20261117_05:24": { "items": { "root.tar.xz": { "path": "images/debian/bookworm/amd64/default/20261117_05:24/rootfs.tar.xz", "size": 90000000, "sha256": "aaa111" } } },
+					"20261118_05:24": { "items": { "root.tar.xz": { "path": "images/debian/bookworm/amd64/default/20261118_05:24/rootfs.tar.xz", "size": 98728488, "sha256": "BBB222" } } }
+				}
+			},
+			"archlinux:current:amd64:cloud": {
+				"os": "Archlinux",
+				"release": "current",
+				"arch": "amd64",
+				"variant": "cloud",
+				"versions": {
+					"20261118_04:18": { "items": { "root.tar.xz": { "path": "images/archlinux/current/amd64/cloud/20261118_04:18/rootfs.tar.xz", "size": 123, "sha256": "ccc" } } }
+				}
+			},
+			"alpine:edge:amd64:default": {
+				"os": "Alpine",
+				"release": "edge",
+				"arch": "amd64",
+				"variant": "default",
+				"versions": {
+					"20261118_01:00": { "items": { "root.tar.xz": { "path": "images/alpine/edge/amd64/default/20261118_01:00/rootfs.tar.xz", "size": 123, "sha256": "ddd" } } }
+				}
+			},
+			"fedora:43:arm64:default": {
+				"os": "Fedora",
+				"release": "43",
+				"arch": "arm64",
+				"variant": "default",
+				"versions": {
+					"20261117_20:33": { "items": { "root.tar.xz": { "path": "images/fedora/43/arm64/default/20261117_20:33/rootfs.tar.xz", "size": 150000000, "sha256": "eee" } } }
+				}
+			}
+		}
+	}`)
+	items, err := parseSimpleStreamsCatalog(raw, "tuna", "https://mirrors.tuna.tsinghua.edu.cn/lxc-images/", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 amd64 default systemd item, got %d: %+v", len(items), items)
+	}
+	it := items[0]
+	if it.Distro != "debian" || it.Release != "bookworm" || it.BuildVersion != "20261118_05:24" || it.SHA256 != "bbb222" {
+		t.Fatalf("unexpected parsed item: %+v", it)
+	}
+	wantURL := "https://mirrors.tuna.tsinghua.edu.cn/lxc-images/images/debian/bookworm/amd64/default/20261118_05:24/rootfs.tar.xz"
+	if it.URL != wantURL {
+		t.Fatalf("unexpected URL: got %s, want %s", it.URL, wantURL)
+	}
+}
+
+func TestParseProxmoxIndexCatalog(t *testing.T) {
+	html := `
+<a href="/proxmox/images/system/alpine-3.24-default_20261105_amd64.tar.xz">alpine</a>
+<a href="/proxmox/images/system/gentoo-current-openrc_20250508_amd64.tar.xz">gentoo</a>
+<a href="/proxmox/images/system/debian-13-standard_13.1-2_amd64.tar.zst">deb13-old</a>
+<a href="/proxmox/images/system/debian-13-standard_13.6-1_amd64.tar.zst">deb13-new</a>
+<a href="/proxmox/images/system/debian-13-standard_13.6-1_arm64.tar.zst">deb13-arm</a>
+<a href="/proxmox/images/system/rockylinux-9-default_20240912_amd64.tar.xz">rocky9</a>
+<a href="/proxmox/images/system/archlinux-base_20260420-1_amd64.tar.zst">arch</a>
+`
+	items := parseProxmoxIndexCatalog(html, "ustc", "https://mirrors.ustc.edu.cn/proxmox/images/system", "amd64")
+	if len(items) != 3 {
+		t.Fatalf("expected 3 amd64 systemd templates, got %d: %+v", len(items), items)
+	}
+	if items[0].Distro != "debian" || items[0].Filename != "debian-13-standard_13.6-1_amd64.tar.zst" {
+		t.Fatalf("expected latest debian 13 first, got %+v", items[0])
+	}
+	if items[1].Distro != "archlinux" || items[1].Release != "current" {
+		t.Fatalf("expected archlinux second, got %+v", items[1])
+	}
+	if items[2].Distro != "rockylinux" || items[2].Release != "9" {
+		t.Fatalf("expected rockylinux third, got %+v", items[2])
+	}
+}
+
+func TestIsAllowedOnlineImageURL(t *testing.T) {
+	allowed := []string{
+		"https://mirrors.tuna.tsinghua.edu.cn/lxc-images/images/debian/bookworm/amd64/default/20261118_05:24/rootfs.tar.xz",
+		"https://mirrors.ustc.edu.cn/proxmox/images/system/rockylinux-9-default_20240912_amd64.tar.xz",
+		"https://mirrors.bfsu.edu.cn/lxc-images/images/archlinux/current/amd64/default/20261118_04:18/rootfs.tar.xz",
+		"https://images.linuxcontainers.org/images/fedora/43/amd64/default/20261117_20:33/rootfs.tar.xz",
+	}
+	for _, u := range allowed {
+		if !IsAllowedOnlineImageURL(u) {
+			t.Fatalf("expected allowed URL: %s", u)
+		}
+	}
+	disallowed := []string{
+		"http://mirrors.tuna.tsinghua.edu.cn/lxc-images/a.tar.xz",
+		"https://evil.example.com/rootfs.tar.xz",
+		"https://mirrors.ustc.edu.cn/other/file.tar.xz",
+		"file:///etc/passwd",
+	}
+	for _, u := range disallowed {
+		if IsAllowedOnlineImageURL(u) {
+			t.Fatalf("expected rejected URL: %s", u)
+		}
+	}
+}
+
+func TestRenderServiceUnitOpenWrtVsSystemd(t *testing.T) {
+	owCfg := ContainerConfig{
+		Machine:     "ow-gw",
+		Rootfs:      "/vol1/nspawn/ow-gw/rootfs",
+		ConfDir:     "/vol1/nspawn/ow-gw/config",
+		ServiceName: "nspawn-ow-gw.service",
+		PhysicalNIC: "enp2s0",
+		InitMode:    InitModeOpenWrt,
+		EnableTun:   true,
+	}
+	owUnit := RenderServiceUnit(owCfg)
+	if !strings.Contains(owUnit, "Type=simple\n") || strings.Contains(owUnit, "Type=notify") {
+		t.Fatalf("expected OpenWrt unit to use Type=simple without Type=notify:\n%s", owUnit)
+	}
+	if !strings.Contains(owUnit, "--bind=/dev/net/tun") || !strings.Contains(owUnit, "DeviceAllow=/dev/net/tun rwm") {
+		t.Fatalf("expected OpenWrt unit to enable /dev/net/tun:\n%s", owUnit)
+	}
+	if strings.Contains(owUnit, "--boot") || !strings.Contains(owUnit, "/sbin/init\n") {
+		t.Fatalf("expected OpenWrt unit to run /sbin/init without --boot:\n%s", owUnit)
+	}
+
+	sysCfg := ContainerConfig{
+		Machine:     "debbox",
+		Rootfs:      "/vol1/nspawn/debbox/rootfs",
+		ConfDir:     "/vol1/nspawn/debbox/config",
+		ServiceName: "nspawn-debbox.service",
+		PhysicalNIC: "enp2s0",
+	}
+	sysUnit := RenderServiceUnit(sysCfg)
+	if !strings.Contains(sysUnit, "Type=notify\n") || !strings.Contains(sysUnit, "--boot") {
+		t.Fatalf("expected standard systemd unit to keep Type=notify and --boot:\n%s", sysUnit)
+	}
+	if strings.Contains(sysUnit, "/dev/net/tun") || strings.Contains(sysUnit, "/sbin/init") {
+		t.Fatalf("standard systemd unit should not contain OpenWrt directives:\n%s", sysUnit)
+	}
+}
+
+func TestEnsureOpenWrtLanDHCPIgnored(t *testing.T) {
+	in := `config dnsmasq
+	option domainneeded '1'
+
+config dhcp 'lan'
+	option interface 'lan'
+	option start '100'
+	option ignore '0'
+
+config dhcp 'wan'
+	option interface 'wan'
+	option ignore '1'
+`
+	out := ensureOpenWrtLanDHCPIgnored(in)
+	if strings.Contains(out, "option ignore '0'") {
+		t.Fatalf("expected option ignore '0' to be replaced in lan section:\n%s", out)
+	}
+	if strings.Count(out, "option ignore '1'") != 2 {
+		t.Fatalf("expected ignore '1' in both lan and wan sections:\n%s", out)
+	}
+
+	inNoIgnore := "config dhcp 'lan'\n\toption interface 'lan'\n\toption start '100'\n"
+	out2 := ensureOpenWrtLanDHCPIgnored(inNoIgnore)
+	if !strings.Contains(out2, "\toption ignore '1'") {
+		t.Fatalf("expected option ignore '1' injected into lan section:\n%s", out2)
+	}
+}
+
+func TestParseServiceFileOpenWrtTunNotInBindMounts(t *testing.T) {
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "ow-test")
+	rootfs := filepath.Join(base, "rootfs")
+	confDir := filepath.Join(base, "config")
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootfs, "etc/openwrt_release"), []byte("DISTRIB_ID='OpenWrt'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	svcPath := filepath.Join(confDir, "nspawn-ow-test.service")
+	cfgInput := ContainerConfig{
+		Machine:     "ow-test",
+		Rootfs:      rootfs,
+		ConfDir:     confDir,
+		ServiceName: "nspawn-ow-test.service",
+		ServicePath: svcPath,
+		PhysicalNIC: "enp2s0",
+		InitMode:    InitModeOpenWrt,
+		EnableTun:   true,
+	}
+	if err := os.WriteFile(svcPath, []byte(RenderServiceUnit(cfgInput)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseServiceFile(svcPath, filepath.Join(tmp, "sys-ow-test.service"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.InitMode != InitModeOpenWrt || !parsed.EnableTun {
+		t.Fatalf("expected InitMode=openwrt and EnableTun=true, got %+v", parsed)
+	}
+	if len(parsed.BindMounts) != 0 {
+		t.Fatalf("expected /dev/net/tun not to appear in BindMounts, got %+v", parsed.BindMounts)
+	}
+}
+
+func TestCronParserAndNextRuns(t *testing.T) {
+	cs, err := ParseCron("30 3 * * 0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sun := time.Date(2026, 11, 29, 3, 30, 0, 0, time.Local) // Sunday
+	if sun.Weekday() != time.Sunday || !cs.Matches(sun) {
+		t.Fatalf("expected Sunday 03:30 to match, weekday=%v", sun.Weekday())
+	}
+	mon := time.Date(2026, 11, 30, 3, 30, 0, 0, time.Local) // Monday
+	if cs.Matches(mon) {
+		t.Fatalf("expected Monday 03:30 not to match")
+	}
+
+	stepCron, err := ParseCron("0 */6 * * *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := stepCron.NextRuns(time.Date(2026, 11, 27, 5, 15, 0, 0, time.Local), 3)
+	if len(runs) != 3 {
+		t.Fatalf("expected 3 next runs, got %d", len(runs))
+	}
+	if runs[0].Hour() != 6 || runs[1].Hour() != 12 || runs[2].Hour() != 18 {
+		t.Fatalf("unexpected step runs: %v", runs)
+	}
+
+	if _, err := ParseCron("* * *"); err == nil {
+		t.Fatalf("expected error for 3-field cron expression")
+	}
+}
+
+func TestSelectExpiredBackupEntries(t *testing.T) {
+	now := time.Date(2026, 11, 27, 15, 0, 0, 0, time.Local)
+	names := []string{
+		"devbox-manual-20261101-010000",          // different tag: MUST NEVER prune
+		"devbox-before-upgrade-20261102-010000",  // different tag: MUST NEVER prune
+		"devbox-auto-20261127-030000",            // newest auto (index 0)
+		"devbox-auto-20261126-030000",            // index 1
+		"devbox-auto-20261125-030000",            // index 2 (>= keepCount=2)
+		"devbox-auto-20261001-030000.tar.zst",    // archive with ext, > 30 days
+	}
+	expired := selectExpiredBackupEntries("devbox", "auto", names, 2, 30, now)
+	if len(expired) != 2 {
+		t.Fatalf("expected 2 expired entries, got %v", expired)
+	}
+	if expired[0] != "devbox-auto-20261125-030000" || expired[1] != "devbox-auto-20261001-030000.tar.zst" {
+		t.Fatalf("unexpected expired entries: %v", expired)
+	}
+
+	// Safety floor: never delete the single newest entry even if older than keepDays
+	onlyOneOld := []string{"devbox-auto-20200101-030000"}
+	if exp := selectExpiredBackupEntries("devbox", "auto", onlyOneOld, 1, 1, now); len(exp) != 0 {
+		t.Fatalf("safety floor violated, got %v", exp)
+	}
+}
+
+func TestContainerSpecBackupRoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	specPath := filepath.Join(tmp, "devbox", "config", ContainerSpecFileName)
+	spec := ContainerSpec{
+		Machine: "devbox",
+		System: SpecSystem{
+			Hostname:    "devbox",
+			Autostart:   true,
+			ServiceName: "nspawn-devbox.service",
+		},
+		Backup: &SpecBackup{
+			Snapshot: &SnapshotScheduleSpec{
+				Enabled:   true,
+				Cron:      "0 3 * * *",
+				Tag:       "auto",
+				ReadOnly:  true,
+				KeepCount: 7,
+			},
+			Export: &ExportScheduleSpec{
+				Enabled:   true,
+				Cron:      "0 4 * * 0",
+				Tag:       "auto",
+				Format:    "tar.zst",
+				KeepCount: 3,
+				KeepDays:  30,
+			},
+		},
+	}
+	if err := WriteContainerSpec(specPath, spec); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ReadContainerSpec(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Backup == nil || loaded.Backup.Snapshot == nil || loaded.Backup.Export == nil {
+		t.Fatalf("expected Backup round-trip to preserve Snapshot & Export, got %+v", loaded.Backup)
+	}
+	if loaded.Backup.Snapshot.Cron != "0 3 * * *" || loaded.Backup.Snapshot.KeepCount != 7 {
+		t.Fatalf("unexpected Snapshot schedule: %+v", loaded.Backup.Snapshot)
+	}
+	if loaded.Backup.Export.Format != "tar.zst" || loaded.Backup.Export.KeepDays != 30 {
+		t.Fatalf("unexpected Export schedule: %+v", loaded.Backup.Export)
+	}
+
+	// Verify ConfigToSpec without Backup preserves existing spec.Backup
+	cfg := SpecToConfig(*loaded, filepath.Dir(filepath.Dir(specPath)), "")
+	cfg.Backup = nil
+	resaved := ConfigToSpec(*cfg, loaded)
+	if resaved.Backup == nil || resaved.Backup.Snapshot == nil || !resaved.Backup.Snapshot.Enabled {
+		t.Fatalf("expected ConfigToSpec to preserve existing spec.Backup")
 	}
 }

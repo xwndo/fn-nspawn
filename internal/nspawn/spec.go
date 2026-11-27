@@ -16,6 +16,8 @@ const (
 	LayoutStandard             = "standard"
 	LayoutLegacy               = "legacy"
 	LayoutExternal             = "external"
+	InitModeSystemd            = "systemd"
+	InitModeOpenWrt            = "openwrt"
 )
 
 type ContainerSpec struct {
@@ -30,6 +32,48 @@ type ContainerSpec struct {
 	Network       SpecNetwork   `json:"network"`
 	Resources     SpecResources `json:"resources"`
 	BindMounts    []BindMount   `json:"bind_mounts"`
+	Backup        *SpecBackup   `json:"backup,omitempty"`
+}
+
+type SnapshotScheduleSpec struct {
+	Enabled   bool   `json:"enabled"`
+	Cron      string `json:"cron"`
+	Tag       string `json:"tag,omitempty"`
+	ReadOnly  bool   `json:"read_only"`
+	StopFirst bool   `json:"stop_first,omitempty"`
+	KeepCount int    `json:"keep_count,omitempty"`
+	KeepDays  int    `json:"keep_days,omitempty"`
+}
+
+type ExportScheduleSpec struct {
+	Enabled   bool   `json:"enabled"`
+	Cron      string `json:"cron"`
+	Tag       string `json:"tag,omitempty"`
+	Format    string `json:"format,omitempty"`
+	StopFirst bool   `json:"stop_first,omitempty"`
+	KeepCount int    `json:"keep_count,omitempty"`
+	KeepDays  int    `json:"keep_days,omitempty"`
+}
+
+type SpecBackup struct {
+	Snapshot *SnapshotScheduleSpec `json:"snapshot,omitempty"`
+	Export   *ExportScheduleSpec   `json:"export,omitempty"`
+}
+
+func cloneSpecBackup(b *SpecBackup) *SpecBackup {
+	if b == nil {
+		return nil
+	}
+	out := &SpecBackup{}
+	if b.Snapshot != nil {
+		s := *b.Snapshot
+		out.Snapshot = &s
+	}
+	if b.Export != nil {
+		e := *b.Export
+		out.Export = &e
+	}
+	return out
 }
 
 type SpecLayout struct {
@@ -45,6 +89,8 @@ type SpecSystem struct {
 	Hostname      string `json:"hostname"`
 	Autostart     bool   `json:"autostart"`
 	ServiceName   string `json:"service_name"`
+	InitMode      string `json:"init_mode,omitempty"`
+	EnableTun     bool   `json:"enable_tun,omitempty"`
 }
 
 type SpecImage struct {
@@ -274,6 +320,8 @@ func SpecToConfig(spec ContainerSpec, containerDir string, systemdLinkPath strin
 		TasksMax:       spec.Resources.TasksMax,
 		Autostart:      spec.System.Autostart,
 		ContainerUser:  spec.System.ContainerUser,
+		InitMode:       spec.System.InitMode,
+		EnableTun:      spec.System.EnableTun,
 		SourceType:     spec.Image.SourceType,
 		Distro:         spec.Image.Distro,
 		Suite:          spec.Image.Suite,
@@ -281,6 +329,7 @@ func SpecToConfig(spec ContainerSpec, containerDir string, systemdLinkPath strin
 		Mirror:         spec.Image.Mirror,
 		SecurityMirror: spec.Image.SecurityMirror,
 		SourceArchive:  spec.Image.SourceArchive,
+		Backup:         cloneSpecBackup(spec.Backup),
 	}
 
 	cfg.LinkHealthy = isSystemdUnitSynced(systemdLinkPath, svcPath)
@@ -324,6 +373,12 @@ func ConfigToSpec(cfg ContainerConfig, existing *ContainerSpec) ContainerSpec {
 	if cfg.ContainerUser != "" {
 		spec.System.ContainerUser = cfg.ContainerUser
 	}
+	if cfg.InitMode != "" {
+		spec.System.InitMode = cfg.InitMode
+	}
+	if cfg.EnableTun {
+		spec.System.EnableTun = true
+	}
 	if cfg.SourceType != "" {
 		spec.Image.SourceType = cfg.SourceType
 	}
@@ -354,6 +409,9 @@ func ConfigToSpec(cfg ContainerConfig, existing *ContainerSpec) ContainerSpec {
 	spec.Resources.CPUQuota = cfg.CPUQuota
 	spec.Resources.TasksMax = cfg.TasksMax
 	spec.BindMounts = append([]BindMount(nil), cfg.BindMounts...)
+	if cfg.Backup != nil {
+		spec.Backup = cloneSpecBackup(cfg.Backup)
+	}
 	NormalizeSpec(&spec)
 	return spec
 }

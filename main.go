@@ -34,6 +34,9 @@ func main() {
 
 	tasks := nspawn.NewTaskManager()
 	mgr := nspawn.NewManager(cfgStore, tasks)
+	schedCtx, schedCancel := context.WithCancel(context.Background())
+	defer schedCancel()
+	go mgr.StartScheduler(schedCtx)
 	if !*devMode {
 		go func() {
 			mgr.EnsureDefaultOVSNIC()

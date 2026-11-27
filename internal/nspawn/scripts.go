@@ -40,18 +40,26 @@ func RenderServiceUnit(cfg ContainerConfig) string {
 		sourcePath = filepath.Join(cfg.ConfDir, svcName)
 	}
 
+	isOpenWrt := cfg.InitMode == InitModeOpenWrt
 	var execArgs []string
 	execArgs = append(execArgs,
 		"/usr/bin/systemd-nspawn",
 		"--quiet",
 		"--keep-unit",
-		"--boot",
+	)
+	if !isOpenWrt {
+		execArgs = append(execArgs, "--boot")
+	}
+	execArgs = append(execArgs,
 		"--machine="+cfg.Machine,
 		"--directory="+quoteSystemdArg(cfg.Rootfs),
 		"--private-network",
 		"--network-veth",
 		fmt.Sprintf("--tmpfs=/tmp:mode=1777,nosuid,nodev,size=%s", cfg.TmpSize),
 	)
+	if cfg.EnableTun {
+		execArgs = append(execArgs, "--bind=/dev/net/tun")
+	}
 
 	for _, b := range cfg.BindMounts {
 		flag := "--bind="
@@ -59,6 +67,9 @@ func RenderServiceUnit(cfg ContainerConfig) string {
 			flag = "--bind-ro="
 		}
 		execArgs = append(execArgs, flag+quoteSystemdArg(b.HostPath+":"+b.ContainerPath))
+	}
+	if isOpenWrt {
+		execArgs = append(execArgs, "/sbin/init")
 	}
 
 	netUp := filepath.Join(cfg.ConfDir, "network-up.sh")
@@ -74,13 +85,21 @@ func RenderServiceUnit(cfg ContainerConfig) string {
 	sb.WriteString("Wants=network-online.target\n")
 	sb.WriteString("StartLimitIntervalSec=0\n\n")
 	sb.WriteString("[Service]\n")
-	sb.WriteString("Type=notify\n")
-	sb.WriteString("NotifyAccess=all\n")
+	if isOpenWrt {
+		sb.WriteString("Type=simple\n")
+	} else {
+		sb.WriteString("Type=notify\n")
+		sb.WriteString("NotifyAccess=all\n")
+	}
 	sb.WriteString("TimeoutStartSec=240\n\n")
 	sb.WriteString("# 开机早期存储池与 OVS 可能尚未挂载/就绪，先于 / 上轮询等待 rootfs 与 OVS 网桥就绪。\n")
+	tunPrep := ""
+	if cfg.EnableTun {
+		tunPrep = "modprobe tun >/dev/null 2>&1 || true; "
+	}
 	sb.WriteString(fmt.Sprintf(
-		"ExecStartPre=/bin/bash -c 'for i in $(seq 1 180); do [ -d \"$1/etc\" ] && ovs-vsctl port-to-br \"$2\" >/dev/null 2>&1 && exit 0; sleep 1; done; echo \"[ERROR] 等待 rootfs($1) 挂载或 OVS($2) 就绪超时\" >&2; exit 1' _ %s %s\n\n",
-		quoteSystemdArg(cfg.Rootfs), quoteSystemdArg(cfg.PhysicalNIC),
+		"ExecStartPre=/bin/bash -c '%sfor i in $(seq 1 180); do [ -d \"$1/etc\" ] && ovs-vsctl port-to-br \"$2\" >/dev/null 2>&1 && exit 0; sleep 1; done; echo \"[ERROR] 等待 rootfs($1) 挂载或 OVS($2) 就绪超时\" >&2; exit 1' _ %s %s\n\n",
+		tunPrep, quoteSystemdArg(cfg.Rootfs), quoteSystemdArg(cfg.PhysicalNIC),
 	))
 	sb.WriteString("# --keep-unit：由本 systemd unit 直接管理容器 cgroup/lifecycle。\n")
 	sb.WriteString("# RestartForceExitStatus=133 只在容器内 reboot 时强制重启，poweroff 正常停止。\n")
@@ -90,6 +109,9 @@ func RenderServiceUnit(cfg ContainerConfig) string {
 	sb.WriteString("ExecStopPost=" + quoteSystemdArg(netDown) + "\n\n")
 	sb.WriteString("KillMode=mixed\n")
 	sb.WriteString("Delegate=yes\n")
+	if cfg.EnableTun {
+		sb.WriteString("DeviceAllow=/dev/net/tun rwm\n")
+	}
 	sb.WriteString("TasksMax=" + cfg.TasksMax + "\n")
 	if strings.TrimSpace(cfg.MemoryMax) != "" {
 		sb.WriteString("MemoryMax=" + strings.TrimSpace(cfg.MemoryMax) + "\n")

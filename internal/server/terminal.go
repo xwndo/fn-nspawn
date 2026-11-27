@@ -6,10 +6,13 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
+	"fn-nspawn/internal/nspawn"
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
 )
@@ -50,13 +53,40 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	machinectlBin, err := exec.LookPath("machinectl")
-	if err != nil {
-		machinectlBin = "/usr/bin/machinectl"
+	var cmd *exec.Cmd
+	if info.Config.InitMode == nspawn.InitModeOpenWrt {
+		pid := info.Runtime.LeaderPID
+		if pid <= 0 {
+			pid = info.Runtime.MainPID
+		}
+		if pid <= 0 {
+			_ = conn.WriteMessage(websocket.TextMessage, []byte("\r\n[ERROR] 无法获取 OpenWrt 容器进程 PID，请确认容器已运行\r\n"))
+			return
+		}
+		nsenterBin, nErr := exec.LookPath("nsenter")
+		if nErr != nil {
+			nsenterBin = "/usr/bin/nsenter"
+		}
+		shellBin := "/bin/sh"
+		if info.Config.Rootfs != "" {
+			if _, sErr := os.Stat(filepath.Join(info.Config.Rootfs, "bin/ash")); sErr == nil {
+				shellBin = "/bin/ash"
+			}
+		}
+		cmd = exec.Command(nsenterBin, "-t", strconv.Itoa(pid), "-a", "--", shellBin, "-l")
+		cmd.Env = []string{
+			"TERM=xterm-256color",
+			"HOME=/root",
+			"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+		}
+	} else {
+		machinectlBin, mErr := exec.LookPath("machinectl")
+		if mErr != nil {
+			machinectlBin = "/usr/bin/machinectl"
+		}
+		cmd = exec.Command(machinectlBin, "shell", user+"@"+info.Config.Machine)
+		cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 	}
-
-	cmd := exec.Command(machinectlBin, "shell", user+"@"+info.Config.Machine)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 30, Cols: 110})
 	if err != nil {

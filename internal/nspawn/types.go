@@ -36,6 +36,8 @@ type ContainerConfig struct {
 	TasksMax       string      `json:"tasks_max"`
 	Autostart      bool        `json:"autostart"`
 	ContainerUser  string      `json:"container_user,omitempty"`
+	InitMode       string      `json:"init_mode,omitempty"`
+	EnableTun      bool        `json:"enable_tun,omitempty"`
 	SourceType     string      `json:"source_type,omitempty"`
 	Distro         string      `json:"distro,omitempty"`
 	Suite          string      `json:"suite,omitempty"`
@@ -46,6 +48,7 @@ type ContainerConfig struct {
 	HasRestore     bool        `json:"has_restore"`
 	HasNetUp       bool        `json:"has_net_up"`
 	HasNetDown     bool        `json:"has_net_down"`
+	Backup         *SpecBackup `json:"backup,omitempty"`
 }
 
 type ContainerRuntime struct {
@@ -146,9 +149,14 @@ type CreateContainerRequest struct {
 	TmpSize        string      `json:"tmp_size"`
 	MemoryMax      string      `json:"memory_max,omitempty"`
 	CPUQuota       string      `json:"cpu_quota,omitempty"`
-	SourceType     string      `json:"source_type,omitempty"` // debootstrap | archive
-	SourceArchive  string      `json:"source_archive,omitempty"`
-	Distro         string      `json:"distro"`          // debian | ubuntu
+	SourceType          string      `json:"source_type,omitempty"` // online_image | debootstrap | archive
+	SourceArchive       string      `json:"source_archive,omitempty"`
+	OnlineSource        string      `json:"online_source,omitempty"`
+	OnlineImageURL      string      `json:"online_image_url,omitempty"`
+	OnlineImageSHA256   string      `json:"online_image_sha256,omitempty"`
+	OnlineImageFilename string      `json:"online_image_filename,omitempty"`
+	OnlineRelease       string      `json:"online_release,omitempty"`
+	Distro              string      `json:"distro"`          // debian | ubuntu | ...
 	Suite          string      `json:"suite"`           // trixie, bookworm, noble, jammy
 	Arch           string      `json:"arch"`            // amd64 | arm64
 	Mirror         string      `json:"mirror"`          // e.g. https://mirrors.ustc.edu.cn/debian
@@ -239,4 +247,19 @@ type TaskRecord struct {
 	EndedAt   *time.Time `json:"ended_at,omitempty"`
 	Error     string     `json:"error,omitempty"`
 	Logs      []string   `json:"logs"`
+}
+
+type ScheduleRunStatus struct {
+	LastRunAt   string   `json:"last_run_at,omitempty"`
+	LastStatus  string   `json:"last_status,omitempty"`
+	LastError   string   `json:"last_error,omitempty"`
+	LastSummary string   `json:"last_summary,omitempty"`
+	NextRuns    []string `json:"next_runs,omitempty"`
+}
+
+type ContainerBackupResponse struct {
+	Machine        string            `json:"machine"`
+	Backup         SpecBackup        `json:"backup"`
+	SnapshotStatus ScheduleRunStatus `json:"snapshot_status"`
+	ExportStatus   ScheduleRunStatus `json:"export_status"`
 }

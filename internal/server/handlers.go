@@ -58,6 +58,41 @@ func (s *Server) handleFSBrowse(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, res)
 }
 
+func (s *Server) handleOnlineImages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	refresh := q.Get("refresh") == "1" || strings.EqualFold(q.Get("refresh"), "true")
+	res, err := s.mgr.ListOnlineImageCatalog(q.Get("source"), q.Get("arch"), refresh)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleCronPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	expr := r.URL.Query().Get("expr")
+	runs, err := nspawn.PreviewCronRuns(expr, 3)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"valid": false,
+			"error": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"valid":     true,
+		"next_runs": runs,
+	})
+}
+
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -374,6 +409,51 @@ func (s *Server) handleContainerRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusAccepted, task)
+
+	case "backup":
+		if len(parts) == 2 {
+			switch r.Method {
+			case http.MethodGet:
+				res, err := s.mgr.GetContainerBackup(machine)
+				if err != nil {
+					writeErr(w, http.StatusNotFound, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, res)
+			case http.MethodPut:
+				var req nspawn.SpecBackup
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					writeErr(w, http.StatusBadRequest, err)
+					return
+				}
+				res, err := s.mgr.SaveContainerBackup(machine, req)
+				if err != nil {
+					writeErr(w, http.StatusBadRequest, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, res)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+			return
+		}
+		if len(parts) == 3 && parts[2] == "run" && r.Method == http.MethodPost {
+			var body struct {
+				Kind string `json:"kind"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			task, err := s.mgr.StartScheduledBackupTask(machine, body.Kind, "manual")
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, task)
+			return
+		}
+		http.NotFound(w, r)
 
 	default:
 		http.NotFound(w, r)

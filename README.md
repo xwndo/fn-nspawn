@@ -53,8 +53,9 @@
 3. **网卡自动识别与 OVS 状态检查**：
    - 自动枚举宿主机物理网卡并标注是否已接入 OVS 网桥；所有创建、导入、配置、迁移与设置入口均实时提示未开启 OVS 的网卡风险。
 4. **多种容器构建方式与快照/镜像体系**：
-   - 支持 **Debian / Ubuntu 在线构建（`debootstrap`）** 以及 **本地 `.tar.gz` / `.tar.zst` rootfs 归档导入**；
-   - 支持 **Btrfs 子卷瞬时快照、只读基线、安全回滚** 以及 **无停机一致性镜像导出**。
+   - 支持 **在线系统镜像库**（内置清华 TUNA、中科大 USTC、北外 BFSU、Linux Containers 官方源，直接拉取 **Debian / Ubuntu / Arch Linux / Fedora / Rocky Linux / AlmaLinux / CentOS Stream / openSUSE / Kali / openEuler / OpenWrt** 镜像并自动本地缓存与 SHA256 校验）、**Debian / Ubuntu 在线构建（`debootstrap`）** 以及 **本地 `.tar.gz` / `.tar.zst` / `.tar.xz` rootfs 归档导入**；
+   - **OpenWrt 专属隔离适配**：支持 `procd`（`Type=simple` + `/sbin/init`）、`/dev/net/tun` 透传、安全 `host0` DHCP（默认禁用 LAN DHCP Server 防冲突）以及网页终端自动切换 `nsenter`，对原有 systemd 容器零影响；
+   - 支持 **Btrfs 子卷瞬时快照、只读基线、安全回滚** 以及 **无停机一致性镜像导出**，并支持将 **Cron 定时快照 / 定时镜像归档与版本保留策略**直接持久化到 `container.json`（迁移或从配置恢复容器后自动生效，绝不误删手动备份）。
 5. **多容器独立网页终端、实时日志与响应式适配**：
    - 基于 `xterm.js` + WebSocket PTY（`machinectl shell`），每个容器保留独立终端会话互不干扰；
    - `journalctl` 实时日志流，内置可拖动侧栏宽度调节与深色/浅色主题，适配桌面浏览器与飞牛手机 App 视图。

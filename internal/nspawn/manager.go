@@ -15,26 +15,39 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fn-nspawn/internal/config"
 )
 
 var (
-	AppVersion    = "1.3.6"
+	AppVersion    = "1.4.2"
 	reMachineName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 	reUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 )
 
 type Manager struct {
-	cfgStore *config.Store
-	tasks    *TaskManager
+	cfgStore           *config.Store
+	tasks              *TaskManager
+	onlineCatalogMu    sync.Mutex
+	onlineCatalogCache map[string]onlineCatalogCacheEntry
+	schedMu            sync.Mutex
+	schedRules         map[string]SpecBackup
+	schedStatus        map[string]ScheduleRunStatus
+	schedRunning       map[string]bool
+	schedLastMinute    map[string]string
 }
 
 func NewManager(cfgStore *config.Store, tasks *TaskManager) *Manager {
 	return &Manager{
-		cfgStore: cfgStore,
-		tasks:    tasks,
+		cfgStore:           cfgStore,
+		tasks:              tasks,
+		onlineCatalogCache: make(map[string]onlineCatalogCacheEntry),
+		schedRules:         make(map[string]SpecBackup),
+		schedStatus:        make(map[string]ScheduleRunStatus),
+		schedRunning:       make(map[string]bool),
+		schedLastMinute:    make(map[string]string),
 	}
 }
 
@@ -353,6 +366,7 @@ func (m *Manager) DiscoverContainers() ([]ContainerInfo, error) {
 			Runtime: rt,
 		})
 	}
+	m.syncAllSchedulesFromContainers(out)
 	return out, nil
 }
 

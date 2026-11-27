@@ -304,18 +304,13 @@ func (m *Manager) ListImages(machine string) ([]ImageArchiveInfo, error) {
 	return out, nil
 }
 
-func (m *Manager) StartExportImageTask(machine string, req ExportImageRequest) (*TaskRecord, error) {
-	info, err := m.GetContainer(machine)
-	if err != nil {
-		return nil, err
-	}
-	cfg := info.Config
+func validateExportImageRequest(cfg ContainerConfig, req ExportImageRequest) (string, string, string, string, error) {
 	exportsDir := cfg.ExportsDir
 	if exportsDir == "" && cfg.ContainerDir != "" {
 		exportsDir = filepath.Join(cfg.ContainerDir, "images", "exports")
 	}
 	if exportsDir == "" {
-		return nil, fmt.Errorf("当前容器未配置镜像导出目录")
+		return "", "", "", "", fmt.Errorf("当前容器未配置镜像导出目录")
 	}
 
 	format := strings.ToLower(strings.TrimSpace(req.Format))
@@ -323,100 +318,114 @@ func (m *Manager) StartExportImageTask(machine string, req ExportImageRequest) (
 		format = "tar.gz"
 	}
 	if format != "tar.gz" && format != "tar.zst" {
-		return nil, fmt.Errorf("不支持的归档格式: %s（支持 tar.gz / tar.zst）", format)
+		return "", "", "", "", fmt.Errorf("不支持的归档格式: %s（支持 tar.gz / tar.zst）", format)
 	}
 	if format == "tar.zst" {
 		if _, err := exec.LookPath("zstd"); err != nil {
-			return nil, fmt.Errorf("宿主机未安装 zstd，请改用 tar.gz 格式")
+			return "", "", "", "", fmt.Errorf("宿主机未安装 zstd，请改用 tar.gz 格式")
 		}
 	}
 
 	srcDir := cfg.Rootfs
 	if snap := strings.TrimSpace(req.SourceSnapshot); snap != "" {
 		if strings.ContainsAny(snap, `/\`) || snap == "." || snap == ".." {
-			return nil, fmt.Errorf("非法的快照名称: %s", snap)
+			return "", "", "", "", fmt.Errorf("非法的快照名称: %s", snap)
 		}
 		srcDir = filepath.Join(cfg.SnapshotDir, snap)
 	}
 	if st, err := os.Stat(srcDir); err != nil || !st.IsDir() {
-		return nil, fmt.Errorf("导出源目录不存在: %s", srcDir)
+		return "", "", "", "", fmt.Errorf("导出源目录不存在: %s", srcDir)
 	}
 
 	tag := sanitizeTag(req.Tag, "image")
 	outName := fmt.Sprintf("%s-%s-%s.%s", cfg.Machine, tag, time.Now().Format("20060102-150405"), format)
-	outPath := filepath.Join(exportsDir, outName)
+	return exportsDir, format, srcDir, filepath.Join(exportsDir, outName), nil
+}
+
+func (m *Manager) exportImageSync(logFn func(string), info *ContainerInfo, req ExportImageRequest) (string, error) {
+	cfg := info.Config
+	exportsDir, format, srcDir, outPath, err := validateExportImageRequest(cfg, req)
+	if err != nil {
+		return "", err
+	}
+
+	var tempSnap string
+	stoppedForExport := false
+	defer func() {
+		if tempSnap != "" {
+			_ = exec.Command("btrfs", "subvolume", "delete", tempSnap).Run()
+		}
+		if stoppedForExport {
+			_ = exec.Command("systemctl", "start", cfg.ServiceName).Run()
+		}
+	}()
+
+	if err := os.MkdirAll(exportsDir, 0755); err != nil {
+		return "", err
+	}
+
+	packDir := srcDir
+	if req.SourceSnapshot == "" {
+		if req.StopFirst && info.Runtime.ActiveState == "active" {
+			logFn("1. 停止容器以保证文件系统一致性...")
+			if err := runCmdLogged(logFn, "systemctl", "stop", cfg.ServiceName); err != nil {
+				return "", fmt.Errorf("停止容器失败: %v", err)
+			}
+			stoppedForExport = true
+			time.Sleep(2 * time.Second)
+		} else if info.Runtime.RootfsIsBtrfs && cfg.SnapshotDir != "" {
+			_ = os.MkdirAll(cfg.SnapshotDir, 0755)
+			tempSnap = filepath.Join(cfg.SnapshotDir, fmt.Sprintf(".tmp-export-%d", time.Now().UnixNano()))
+			logFn("1. 创建只读临时 Btrfs 快照用于无停机一致性打包: " + tempSnap)
+			if err := runCmdLogged(logFn, "btrfs", "subvolume", "snapshot", "-r", cfg.Rootfs, tempSnap); err != nil {
+				return "", fmt.Errorf("创建临时快照失败: %v", err)
+			}
+			packDir = tempSnap
+		}
+	} else {
+		logFn("1. 从指定快照打包镜像: " + srcDir)
+	}
+
+	tmpOut := outPath + ".tmp"
+	logFn(fmt.Sprintf("2. 开始打包压缩 rootfs -> %s（耗时视容器体积而定，请耐心等待）...", outPath))
+	var tarArgs []string
+	if format == "tar.zst" {
+		tarArgs = []string{"-I", "zstd -T0 -3", "--numeric-owner", "--one-file-system", "-cpf", tmpOut, "-C", packDir, "."}
+	} else {
+		tarArgs = []string{"--numeric-owner", "--one-file-system", "-czpf", tmpOut, "-C", packDir, "."}
+	}
+	if err := runCmdLogged(logFn, "tar", tarArgs...); err != nil {
+		_ = os.Remove(tmpOut)
+		return "", fmt.Errorf("打包镜像失败: %v", err)
+	}
+	if err := os.Rename(tmpOut, outPath); err != nil {
+		_ = os.Remove(tmpOut)
+		return "", err
+	}
+	if fi, err := os.Stat(outPath); err == nil {
+		logFn(fmt.Sprintf("[OK] 镜像已导出: %s (%.2f MiB)", outPath, float64(fi.Size())/1024/1024))
+	} else {
+		logFn("[OK] 镜像已导出: " + outPath)
+	}
+	return outPath, nil
+}
+
+func (m *Manager) StartExportImageTask(machine string, req ExportImageRequest) (*TaskRecord, error) {
+	info, err := m.GetContainer(machine)
+	if err != nil {
+		return nil, err
+	}
+	if _, _, _, _, err := validateExportImageRequest(info.Config, req); err != nil {
+		return nil, err
+	}
 
 	task := m.tasks.Create("export-image", machine)
 	go func() {
-		var taskErr error
-		var tempSnap string
-		stoppedForExport := false
-		defer func() {
-			if tempSnap != "" {
-				_ = exec.Command("btrfs", "subvolume", "delete", tempSnap).Run()
-			}
-			if stoppedForExport {
-				_ = exec.Command("systemctl", "start", cfg.ServiceName).Run()
-			}
-			m.tasks.Finish(task.ID, taskErr)
-		}()
-
 		logFn := func(msg string) {
 			m.tasks.AppendLog(task.ID, msg)
 		}
-
-		if err := os.MkdirAll(exportsDir, 0755); err != nil {
-			taskErr = err
-			return
-		}
-
-		packDir := srcDir
-		if req.SourceSnapshot == "" {
-			if req.StopFirst && info.Runtime.ActiveState == "active" {
-				logFn("1. 停止容器以保证文件系统一致性...")
-				if err := runCmdLogged(logFn, "systemctl", "stop", cfg.ServiceName); err != nil {
-					taskErr = fmt.Errorf("停止容器失败: %v", err)
-					return
-				}
-				stoppedForExport = true
-				time.Sleep(2 * time.Second)
-			} else if info.Runtime.RootfsIsBtrfs && cfg.SnapshotDir != "" {
-				_ = os.MkdirAll(cfg.SnapshotDir, 0755)
-				tempSnap = filepath.Join(cfg.SnapshotDir, fmt.Sprintf(".tmp-export-%d", time.Now().UnixNano()))
-				logFn("1. 创建只读临时 Btrfs 快照用于无停机一致性打包: " + tempSnap)
-				if err := runCmdLogged(logFn, "btrfs", "subvolume", "snapshot", "-r", cfg.Rootfs, tempSnap); err != nil {
-					taskErr = fmt.Errorf("创建临时快照失败: %v", err)
-					return
-				}
-				packDir = tempSnap
-			}
-		} else {
-			logFn("1. 从指定快照打包镜像: " + srcDir)
-		}
-
-		tmpOut := outPath + ".tmp"
-		logFn(fmt.Sprintf("2. 开始打包压缩 rootfs -> %s（耗时视容器体积而定，请耐心等待）...", outPath))
-		var tarArgs []string
-		if format == "tar.zst" {
-			tarArgs = []string{"-I", "zstd -T0 -3", "--numeric-owner", "--one-file-system", "-cpf", tmpOut, "-C", packDir, "."}
-		} else {
-			tarArgs = []string{"--numeric-owner", "--one-file-system", "-czpf", tmpOut, "-C", packDir, "."}
-		}
-		if err := runCmdLogged(logFn, "tar", tarArgs...); err != nil {
-			_ = os.Remove(tmpOut)
-			taskErr = fmt.Errorf("打包镜像失败: %v", err)
-			return
-		}
-		if err := os.Rename(tmpOut, outPath); err != nil {
-			_ = os.Remove(tmpOut)
-			taskErr = err
-			return
-		}
-		if fi, err := os.Stat(outPath); err == nil {
-			logFn(fmt.Sprintf("[OK] 镜像已导出: %s (%.2f MiB)", outPath, float64(fi.Size())/1024/1024))
-		} else {
-			logFn("[OK] 镜像已导出: " + outPath)
-		}
+		_, taskErr := m.exportImageSync(logFn, info, req)
+		m.tasks.Finish(task.ID, taskErr)
 	}()
 
 	return task, nil

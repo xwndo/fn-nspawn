@@ -36,6 +36,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/me", s.handleMe)
 	s.mux.HandleFunc("/api/host", s.handleHost)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
+	s.mux.HandleFunc("/api/images/online", s.handleOnlineImages)
+	s.mux.HandleFunc("/api/cron/preview", s.handleCronPreview)
 	s.mux.HandleFunc("/api/fs/browse", s.handleFSBrowse)
 	s.mux.HandleFunc("/api/tasks", s.handleTasks)
 	s.mux.HandleFunc("/api/tasks/", s.handleTaskDetail)

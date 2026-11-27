@@ -116,6 +116,8 @@ func ParseServiceFile(servicePath string, systemdLinkPath string) (*ContainerCon
 			cfg.Description = spec.Description
 			cfg.Autostart = spec.System.Autostart
 			cfg.ContainerUser = spec.System.ContainerUser
+			cfg.InitMode = spec.System.InitMode
+			cfg.EnableTun = spec.System.EnableTun
 			cfg.SourceType = spec.Image.SourceType
 			cfg.Distro = spec.Image.Distro
 			cfg.Suite = spec.Image.Suite
@@ -123,6 +125,7 @@ func ParseServiceFile(servicePath string, systemdLinkPath string) (*ContainerCon
 			cfg.Mirror = spec.Image.Mirror
 			cfg.SecurityMirror = spec.Image.SecurityMirror
 			cfg.SourceArchive = spec.Image.SourceArchive
+			cfg.Backup = cloneSpecBackup(spec.Backup)
 		}
 	} else {
 		// Legacy layout: <BaseRoot>/<Machine>/rootfs + <BaseRoot>/<Machine>-conf/
@@ -175,6 +178,9 @@ func ParseServiceFile(servicePath string, systemdLinkPath string) (*ContainerCon
 
 	if _, err := os.Stat(filepath.Join(cfg.ConfDir, "restore.sh")); err == nil {
 		cfg.HasRestore = true
+	}
+	if cfg.InitMode == "" && cfg.Rootfs != "" && isOpenWrtRootfs(cfg.Rootfs, cfg.Distro) {
+		cfg.InitMode = InitModeOpenWrt
 	}
 
 	return cfg, nil
@@ -283,6 +289,11 @@ func parseExecStartArgs(execStart string, cfg *ContainerConfig) {
 			continue
 		}
 		if v, ok := nextVal("--bind"); ok {
+			trimmedV := strings.TrimSpace(v)
+			if trimmedV == "/dev/net/tun" || strings.HasPrefix(trimmedV, "/dev/net/tun:") {
+				cfg.EnableTun = true
+				continue
+			}
 			if bm, ok := parseBindValue(v, false); ok {
 				cfg.BindMounts = append(cfg.BindMounts, bm)
 			}

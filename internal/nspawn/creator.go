@@ -24,6 +24,11 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	req.CPUQuota = strings.TrimSpace(req.CPUQuota)
 	req.SourceType = strings.ToLower(strings.TrimSpace(req.SourceType))
 	req.SourceArchive = strings.TrimSpace(req.SourceArchive)
+	req.OnlineSource = strings.ToLower(strings.TrimSpace(req.OnlineSource))
+	req.OnlineImageURL = strings.TrimSpace(req.OnlineImageURL)
+	req.OnlineImageSHA256 = strings.ToLower(strings.TrimSpace(req.OnlineImageSHA256))
+	req.OnlineImageFilename = strings.TrimSpace(req.OnlineImageFilename)
+	req.OnlineRelease = strings.TrimSpace(req.OnlineRelease)
 	req.Distro = strings.ToLower(strings.TrimSpace(req.Distro))
 	req.Suite = strings.TrimSpace(req.Suite)
 	req.Arch = strings.TrimSpace(req.Arch)
@@ -33,7 +38,7 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	if req.SourceType == "" {
 		req.SourceType = "debootstrap"
 	}
-	if req.SourceType != "debootstrap" && req.SourceType != "archive" {
+	if req.SourceType != "debootstrap" && req.SourceType != "archive" && req.SourceType != "online_image" {
 		return nil, fmt.Errorf("不支持的创建来源类型: %s", req.SourceType)
 	}
 
@@ -52,6 +57,23 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	}
 	if req.SourceType == "debootstrap" && req.Password == "" {
 		return nil, fmt.Errorf("在线构建容器时，容器用户密码不能为空")
+	}
+	if req.SourceType == "online_image" {
+		if req.Password == "" {
+			return nil, fmt.Errorf("使用在线镜像库创建容器时，容器用户密码不能为空")
+		}
+		if !IsAllowedOnlineImageURL(req.OnlineImageURL) {
+			return nil, fmt.Errorf("请从内置镜像库选择有效的系统镜像（仅支持可信 HTTPS 镜像源）")
+		}
+		if req.OnlineImageFilename == "" {
+			req.OnlineImageFilename = filepath.Base(req.OnlineImageURL)
+		}
+		if req.Suite == "" && req.OnlineRelease != "" {
+			req.Suite = req.OnlineRelease
+		}
+		if req.Mirror == "" {
+			req.Mirror = req.OnlineImageURL
+		}
 	}
 	if req.SourceType == "archive" {
 		if req.SourceArchive == "" || !filepath.IsAbs(req.SourceArchive) {
@@ -148,6 +170,284 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	return task, nil
 }
 
+func isOpenWrtRootfs(rootfs, distro string) bool {
+	if strings.EqualFold(strings.TrimSpace(distro), "openwrt") {
+		return true
+	}
+	if strings.TrimSpace(rootfs) == "" {
+		return false
+	}
+	for _, marker := range []string{"etc/openwrt_release", "etc/openwrt_version"} {
+		if _, err := os.Stat(filepath.Join(rootfs, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func renderOpenWrtHost0NetworkUCI() string {
+	return `config interface 'loopback'
+	option device 'lo'
+	option proto 'static'
+	option ipaddr '127.0.0.1'
+	option netmask '255.0.0.0'
+
+config interface 'lan'
+	option device 'host0'
+	option proto 'dhcp'
+`
+}
+
+func ensureOpenWrtLanDHCPIgnored(raw string) string {
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	lines := strings.Split(normalized, "\n")
+	var out []string
+	inLan := false
+	foundLan := false
+	sawIgnore := false
+
+	isLanHeader := func(trimmed string) bool {
+		fields := strings.Fields(trimmed)
+		if len(fields) < 3 || fields[0] != "config" || fields[1] != "dhcp" {
+			return false
+		}
+		name := strings.Trim(fields[2], `"'`)
+		return name == "lan"
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "config ") {
+			if inLan && !sawIgnore {
+				out = append(out, "\toption ignore '1'")
+			}
+			inLan = isLanHeader(trimmed)
+			if inLan {
+				foundLan = true
+				sawIgnore = false
+			}
+			out = append(out, line)
+			continue
+		}
+		if inLan && strings.HasPrefix(trimmed, "option ") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 2 && strings.Trim(fields[1], `"'`) == "ignore" {
+				if !sawIgnore {
+					out = append(out, "\toption ignore '1'")
+					sawIgnore = true
+				}
+				continue
+			}
+		}
+		out = append(out, line)
+	}
+	if inLan && !sawIgnore {
+		out = append(out, "\toption ignore '1'")
+	}
+	if !foundLan {
+		if len(out) > 0 && out[len(out)-1] != "" {
+			out = append(out, "")
+		}
+		out = append(out, "config dhcp 'lan'", "\toption interface 'lan'", "\toption ignore '1'")
+	}
+	res := strings.Join(out, "\n")
+	if !strings.HasSuffix(res, "\n") {
+		res += "\n"
+	}
+	return res
+}
+
+func configureOpenWrtRootfs(logFn func(string), rootfs string, req CreateContainerRequest) {
+	logFn("   检测到 OpenWrt 系统，自动适配 UCI host0 DHCP 并默认禁用 LAN DHCP Server（防止与主路由冲突）")
+	_ = os.WriteFile(filepath.Join(rootfs, "etc/hostname"), []byte(req.Machine+"\n"), 0644)
+
+	// 1. Update UCI system hostname if present
+	sysCfgPath := filepath.Join(rootfs, "etc/config/system")
+	if b, err := os.ReadFile(sysCfgPath); err == nil {
+		lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
+		for i, l := range lines {
+			t := strings.TrimSpace(l)
+			if strings.HasPrefix(t, "option hostname") {
+				lines[i] = fmt.Sprintf("\toption hostname '%s'", req.Machine)
+			}
+		}
+		_ = os.WriteFile(sysCfgPath, []byte(strings.Join(lines, "\n")), 0644)
+	}
+
+	// 2. Configure host0 as DHCP client in /etc/config/network (preserving original as .orig)
+	netCfgPath := filepath.Join(rootfs, "etc/config/network")
+	_ = os.MkdirAll(filepath.Dir(netCfgPath), 0755)
+	origBackup := netCfgPath + ".orig"
+	if _, err := os.Stat(origBackup); os.IsNotExist(err) {
+		if orig, rErr := os.ReadFile(netCfgPath); rErr == nil {
+			_ = os.WriteFile(origBackup, orig, 0644)
+		}
+	}
+	_ = os.WriteFile(netCfgPath, []byte(renderOpenWrtHost0NetworkUCI()), 0644)
+
+	// 3. Disable DHCP Server on LAN by default
+	dhcpCfgPath := filepath.Join(rootfs, "etc/config/dhcp")
+	var dhcpRaw string
+	if b, err := os.ReadFile(dhcpCfgPath); err == nil {
+		dhcpRaw = string(b)
+	}
+	_ = os.WriteFile(dhcpCfgPath, []byte(ensureOpenWrtLanDHCPIgnored(dhcpRaw)), 0644)
+
+	// 4. Set root password (chpasswd or BusyBox passwd)
+	if req.Password != "" {
+		logFn("   设置 OpenWrt root 登录密码")
+		chpasswdCmd := exec.Command("chroot", rootfs, "chpasswd")
+		chpasswdCmd.Stdin = strings.NewReader("root:" + req.Password + "\n")
+		if chpasswdCmd.Run() != nil {
+			passwdCmd := exec.Command("chroot", rootfs, "/bin/passwd", "root")
+			passwdCmd.Stdin = strings.NewReader(req.Password + "\n" + req.Password + "\n")
+			_ = passwdCmd.Run()
+		}
+	}
+}
+
+func extractRootfsArchive(logFn func(string), archivePath, rootfs string) error {
+	lower := strings.ToLower(archivePath)
+	var tarArgs []string
+	switch {
+	case strings.HasSuffix(lower, ".tar.zst") || strings.HasSuffix(lower, ".zst"):
+		if _, err := exec.LookPath("zstd"); err != nil {
+			return fmt.Errorf("解压 .tar.zst 需要宿主机安装 zstd")
+		}
+		tarArgs = []string{"-I", "zstd", "--numeric-owner", "-xpf", archivePath, "-C", rootfs}
+	case strings.HasSuffix(lower, ".tar.xz") || strings.HasSuffix(lower, ".xz"):
+		if _, err := exec.LookPath("xz"); err != nil {
+			return fmt.Errorf("解压 .tar.xz 需要宿主机安装 xz-utils")
+		}
+		tarArgs = []string{"--numeric-owner", "-xJf", archivePath, "-C", rootfs}
+	case strings.HasSuffix(lower, ".tar.gz") || strings.HasSuffix(lower, ".tgz"):
+		tarArgs = []string{"--numeric-owner", "-xzf", archivePath, "-C", rootfs}
+	default:
+		tarArgs = []string{"--numeric-owner", "-xpaf", archivePath, "-C", rootfs}
+	}
+	if err := runStreamCmd(logFn, nil, "tar", tarArgs...); err != nil {
+		return fmt.Errorf("解压镜像归档失败: %v", err)
+	}
+	return nil
+}
+
+func systemdUnitExistsInRootfs(rootfs, unit string) bool {
+	for _, base := range []string{"usr/lib/systemd/system", "lib/systemd/system", "etc/systemd/system"} {
+		if _, err := os.Stat(filepath.Join(rootfs, base, unit)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func configureExtractedRootfs(logFn func(string), rootfs string, req CreateContainerRequest) {
+	_ = os.WriteFile(filepath.Join(rootfs, "etc/hostname"), []byte(req.Machine+"\n"), 0644)
+	hostsContent := fmt.Sprintf("127.0.0.1 localhost\n127.0.1.1 %s\n::1 localhost ip6-localhost ip6-loopback\n", req.Machine)
+	_ = os.WriteFile(filepath.Join(rootfs, "etc/hosts"), []byte(hostsContent), 0644)
+
+	// 1. Cross-distro host0 DHCP configuration
+	netDir := filepath.Join(rootfs, "etc/systemd/network")
+	_ = os.MkdirAll(netDir, 0755)
+	netCfgFile := filepath.Join(netDir, "20-host0.network")
+	if _, err := os.Stat(netCfgFile); os.IsNotExist(err) {
+		netCfg := "[Match]\nName=host0\n\n[Network]\nDHCP=yes\nIPv6AcceptRA=yes\n"
+		_ = os.WriteFile(netCfgFile, []byte(netCfg), 0644)
+	}
+
+	hasNetworkd := systemdUnitExistsInRootfs(rootfs, "systemd-networkd.service")
+	hasResolved := systemdUnitExistsInRootfs(rootfs, "systemd-resolved.service")
+	hasNM := systemdUnitExistsInRootfs(rootfs, "NetworkManager.service")
+
+	if hasNetworkd {
+		_ = exec.Command("systemctl", "--root="+rootfs, "enable", "systemd-networkd.service").Run()
+	} else if hasNM {
+		_ = exec.Command("systemctl", "--root="+rootfs, "enable", "NetworkManager.service").Run()
+		nmDir := filepath.Join(rootfs, "etc/NetworkManager/system-connections")
+		_ = os.MkdirAll(nmDir, 0755)
+		nmFile := filepath.Join(nmDir, "host0.nmconnection")
+		if _, err := os.Stat(nmFile); os.IsNotExist(err) {
+			nmCfg := "[connection]\nid=host0\nuuid=00000000-0000-4000-8000-000000000001\ntype=ethernet\ninterface-name=host0\nautoconnect=true\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n"
+			_ = os.WriteFile(nmFile, []byte(nmCfg), 0600)
+			_ = os.Chmod(nmFile, 0600)
+		}
+	} else {
+		ifacesPath := filepath.Join(rootfs, "etc/network/interfaces")
+		if b, err := os.ReadFile(ifacesPath); err == nil && !strings.Contains(string(b), "host0") {
+			updated := strings.TrimRight(string(b), "\n") + "\n\nauto host0\niface host0 inet dhcp\n"
+			_ = os.WriteFile(ifacesPath, []byte(updated), 0644)
+		}
+	}
+
+	if hasResolved {
+		_ = exec.Command("systemctl", "--root="+rootfs, "enable", "systemd-resolved.service").Run()
+		resolvPath := filepath.Join(rootfs, "etc/resolv.conf")
+		_ = os.Remove(resolvPath)
+		_ = os.Symlink("/run/systemd/resolve/stub-resolv.conf", resolvPath)
+	} else {
+		var resolvCands []string
+		for _, p := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
+			if b, err := os.ReadFile(p); err == nil {
+				resolvCands = append(resolvCands, string(b))
+			}
+		}
+		resolvContent, _ := buildChrootResolvConf(resolvCands...)
+		resolvPath := filepath.Join(rootfs, "etc/resolv.conf")
+		_ = os.Remove(resolvPath)
+		_ = os.WriteFile(resolvPath, []byte(resolvContent), 0644)
+	}
+
+	// 2. Configure user, password, and sudo/wheel privileges
+	if req.Password != "" && req.ContainerUser != "" {
+		logFn("   配置容器用户与 sudo 权限: " + req.ContainerUser)
+		if exec.Command("chroot", rootfs, "id", req.ContainerUser).Run() != nil {
+			if exec.Command("chroot", rootfs, "useradd", "-m", "-s", "/bin/bash", req.ContainerUser).Run() != nil {
+				_ = exec.Command("chroot", rootfs, "useradd", "-m", "-s", "/bin/sh", req.ContainerUser).Run()
+			}
+		}
+		chpasswdCmd := exec.Command("chroot", rootfs, "chpasswd")
+		chpasswdCmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", req.ContainerUser, req.Password))
+		_ = chpasswdCmd.Run()
+
+		if grpBytes, err := os.ReadFile(filepath.Join(rootfs, "etc/group")); err == nil {
+			grpText := string(grpBytes)
+			for _, g := range []string{"sudo", "wheel"} {
+				if strings.Contains(grpText, "\n"+g+":") || strings.HasPrefix(grpText, g+":") {
+					_ = exec.Command("chroot", rootfs, "usermod", "-aG", g, req.ContainerUser).Run()
+				}
+			}
+		}
+		if st, err := os.Stat(filepath.Join(rootfs, "etc/sudoers.d")); err == nil && st.IsDir() {
+			sudoRule := fmt.Sprintf("%s ALL=(ALL:ALL) ALL\n", req.ContainerUser)
+			sudoFile := filepath.Join(rootfs, "etc/sudoers.d/90-fn-nspawn-user")
+			if err := os.WriteFile(sudoFile, []byte(sudoRule), 0440); err == nil {
+				_ = os.Chmod(sudoFile, 0440)
+			}
+		}
+	}
+
+	// 3. SSH host keys & enable ssh/sshd if installed
+	if _, err := os.Stat(filepath.Join(rootfs, "usr/bin/ssh-keygen")); err == nil {
+		_ = runStreamCmd(logFn, nil, "chroot", rootfs, "ssh-keygen", "-A")
+		if keyFiles, err := filepath.Glob(filepath.Join(rootfs, "etc/ssh/ssh_host_*_key")); err == nil {
+			for _, kf := range keyFiles {
+				_ = os.Chown(kf, 0, 0)
+				_ = os.Chmod(kf, 0600)
+			}
+		}
+		if pubFiles, err := filepath.Glob(filepath.Join(rootfs, "etc/ssh/ssh_host_*_key.pub")); err == nil {
+			for _, pf := range pubFiles {
+				_ = os.Chown(pf, 0, 0)
+				_ = os.Chmod(pf, 0644)
+			}
+		}
+	}
+	for _, sshUnit := range []string{"ssh.service", "sshd.service"} {
+		if systemdUnitExistsInRootfs(rootfs, sshUnit) {
+			_ = exec.Command("systemctl", "--root="+rootfs, "enable", sshUnit).Run()
+		}
+	}
+}
+
 func buildChrootResolvConf(rawCandidates ...string) (string, []string) {
 	seen := make(map[string]bool)
 	var servers []string
@@ -239,31 +539,56 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 	}
 
 	// 1. Ensure host dependencies
-	logFn("1. 检查并准备宿主机依赖 (systemd-container, btrfs-progs" + func() string {
-		if req.SourceType == "debootstrap" {
-			return ", debootstrap"
-		}
-		return ""
-	}() + ")")
+	archiveHint := strings.ToLower(req.SourceArchive)
+	if req.SourceType == "online_image" {
+		archiveHint = strings.ToLower(req.OnlineImageFilename + " " + req.OnlineImageURL)
+	}
+	needsXZ := (req.SourceType == "online_image" || req.SourceType == "archive") &&
+		(strings.Contains(archiveHint, ".tar.xz") || strings.HasSuffix(strings.TrimSpace(archiveHint), ".xz"))
+	needsZstd := (req.SourceType == "online_image" || req.SourceType == "archive") &&
+		(strings.Contains(archiveHint, ".tar.zst") || strings.HasSuffix(strings.TrimSpace(archiveHint), ".zst"))
 
-	requiredBins := []string{"systemd-nspawn", "btrfs"}
+	depLabel := "systemd-container, btrfs-progs"
 	if req.SourceType == "debootstrap" {
-		requiredBins = append(requiredBins, "debootstrap")
+		depLabel += ", debootstrap"
 	}
-	needInstall := false
-	for _, bin := range requiredBins {
-		if _, err := exec.LookPath(bin); err != nil {
-			needInstall = true
-			break
+	if needsXZ {
+		depLabel += ", xz-utils"
+	}
+	if needsZstd {
+		depLabel += ", zstd"
+	}
+	logFn("1. 检查并准备宿主机依赖 (" + depLabel + ")")
+
+	checkBins := [][2]string{
+		{"systemd-nspawn", "systemd-container"},
+		{"btrfs", "btrfs-progs"},
+	}
+	if req.SourceType == "debootstrap" {
+		checkBins = append(checkBins, [2]string{"debootstrap", "debootstrap"})
+	}
+	if needsXZ {
+		checkBins = append(checkBins, [2]string{"xz", "xz-utils"})
+	}
+	if needsZstd {
+		checkBins = append(checkBins, [2]string{"zstd", "zstd"})
+	}
+
+	var installPkgs []string
+	seenPkg := make(map[string]bool)
+	for _, pair := range checkBins {
+		if _, err := exec.LookPath(pair[0]); err != nil && !seenPkg[pair[1]] {
+			seenPkg[pair[1]] = true
+			installPkgs = append(installPkgs, pair[1])
 		}
 	}
-	if needInstall {
+	if len(installPkgs) > 0 {
 		if err := runStreamCmd(logFn, nil, "apt-get", "update"); err != nil {
 			taskErr = fmt.Errorf("apt-get update 失败: %v", err)
 			return
 		}
-		if err := runStreamCmd(logFn, []string{"DEBIAN_FRONTEND=noninteractive"},
-			"apt-get", "install", "-y", "systemd-container", "debootstrap", "btrfs-progs", "ca-certificates"); err != nil {
+		installArgs := append([]string{"install", "-y", "ca-certificates"}, installPkgs...)
+		if err := runStreamCmd(logFn, []string{"DEBIAN_FRONTEND=noninteractive"}, "apt-get", installArgs...); err != nil {
 			taskErr = fmt.Errorf("安装宿主机依赖失败: %v", err)
 			return
 		}
@@ -293,48 +618,53 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 	}
 	rootfsCreated = true
 
-	if req.SourceType == "archive" {
-		// 3a. Extract rootfs archive
-		logFn("3. 从本地镜像归档解压 rootfs: " + req.SourceArchive)
-		lower := strings.ToLower(req.SourceArchive)
-		var tarArgs []string
-		if strings.HasSuffix(lower, ".tar.zst") || strings.HasSuffix(lower, ".zst") {
-			if _, err := exec.LookPath("zstd"); err != nil {
-				taskErr = fmt.Errorf("解压 .tar.zst 需要宿主机安装 zstd")
-				return
-			}
-			tarArgs = []string{"-I", "zstd", "--numeric-owner", "-xpf", req.SourceArchive, "-C", paths.Rootfs}
-		} else {
-			tarArgs = []string{"--numeric-owner", "-xpaf", req.SourceArchive, "-C", paths.Rootfs}
+	initMode := ""
+	enableTun := false
+
+	if req.SourceType == "online_image" {
+		logFn(fmt.Sprintf("3. 拉取在线系统镜像 (%s / %s %s)...", req.Distro, req.Suite, req.Arch))
+		archivePath, err := m.DownloadOnlineImage(logFn, req.OnlineImageURL, req.OnlineSource, req.OnlineImageFilename, req.OnlineImageSHA256, req.BaseRoot)
+		if err != nil {
+			taskErr = err
+			return
 		}
-		if err := runStreamCmd(logFn, nil, "tar", tarArgs...); err != nil {
-			taskErr = fmt.Errorf("解压镜像归档失败: %v", err)
+		req.SourceArchive = archivePath
+
+		logFn("4. 解压系统镜像至 rootfs...")
+		if err := extractRootfsArchive(logFn, archivePath, paths.Rootfs); err != nil {
+			taskErr = err
 			return
 		}
 
-		logFn("4. 更新容器主机名与基础网络配置")
-		_ = os.WriteFile(filepath.Join(paths.Rootfs, "etc/hostname"), []byte(req.Machine+"\n"), 0644)
-		hostsContent := fmt.Sprintf("127.0.0.1 localhost\n127.0.1.1 %s\n::1 localhost ip6-localhost ip6-loopback\n", req.Machine)
-		_ = os.WriteFile(filepath.Join(paths.Rootfs, "etc/hosts"), []byte(hostsContent), 0644)
-
-		netDir := filepath.Join(paths.Rootfs, "etc/systemd/network")
-		_ = os.MkdirAll(netDir, 0755)
-		netCfgFile := filepath.Join(netDir, "20-host0.network")
-		if _, err := os.Stat(netCfgFile); os.IsNotExist(err) {
-			netCfg := "[Match]\nName=host0\n\n[Network]\nDHCP=yes\nIPv6AcceptRA=yes\n"
-			_ = os.WriteFile(netCfgFile, []byte(netCfg), 0644)
+		if isOpenWrtRootfs(paths.Rootfs, req.Distro) {
+			initMode = InitModeOpenWrt
+			enableTun = true
+			req.Distro = "openwrt"
+			req.ContainerUser = "root"
+			logFn("5. 适配 OpenWrt procd 启动与安全旁路由网络")
+			configureOpenWrtRootfs(logFn, paths.Rootfs, req)
+		} else {
+			logFn("5. 适配容器主机名、网络 (host0 DHCP)、用户与 SSH 服务")
+			configureExtractedRootfs(logFn, paths.Rootfs, req)
 		}
-		_ = exec.Command("systemctl", "--root="+paths.Rootfs, "enable", "systemd-networkd.service").Run()
+	} else if req.SourceType == "archive" {
+		// 3a. Extract rootfs archive
+		logFn("3. 从本地镜像归档解压 rootfs: " + req.SourceArchive)
+		if err := extractRootfsArchive(logFn, req.SourceArchive, paths.Rootfs); err != nil {
+			taskErr = err
+			return
+		}
 
-		if req.Password != "" {
-			logFn("5. 配置/更新容器用户: " + req.ContainerUser)
-			if exec.Command("chroot", paths.Rootfs, "id", req.ContainerUser).Run() != nil {
-				_ = runStreamCmd(logFn, nil, "chroot", paths.Rootfs, "useradd", "-m", "-s", "/bin/bash", req.ContainerUser)
-			}
-			chpasswdCmd := exec.Command("chroot", paths.Rootfs, "chpasswd")
-			chpasswdCmd.Stdin = strings.NewReader(fmt.Sprintf("%s:%s\n", req.ContainerUser, req.Password))
-			_ = chpasswdCmd.Run()
-			_ = exec.Command("chroot", paths.Rootfs, "usermod", "-aG", "sudo", req.ContainerUser).Run()
+		if isOpenWrtRootfs(paths.Rootfs, req.Distro) {
+			initMode = InitModeOpenWrt
+			enableTun = true
+			req.Distro = "openwrt"
+			req.ContainerUser = "root"
+			logFn("4. 适配 OpenWrt procd 启动与安全旁路由网络")
+			configureOpenWrtRootfs(logFn, paths.Rootfs, req)
+		} else {
+			logFn("4. 更新容器主机名、基础网络配置与用户")
+			configureExtractedRootfs(logFn, paths.Rootfs, req)
 		}
 	} else {
 		// 3b. Run debootstrap (compatible with newer Ubuntu/Debian suites on older Debian hosts)
@@ -553,6 +883,8 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 			Hostname:      req.Machine,
 			Autostart:     autostart,
 			ServiceName:   paths.ServiceName,
+			InitMode:      initMode,
+			EnableTun:     enableTun,
 		},
 		Image: SpecImage{
 			SourceType:     req.SourceType,
