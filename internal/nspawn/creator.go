@@ -148,6 +148,39 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	return task, nil
 }
 
+func buildChrootResolvConf(rawCandidates ...string) (string, []string) {
+	seen := make(map[string]bool)
+	var servers []string
+	for _, raw := range rawCandidates {
+		for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+				continue
+			}
+			fields := strings.Fields(trimmed)
+			if len(fields) < 2 || fields[0] != "nameserver" {
+				continue
+			}
+			ip := strings.TrimSpace(fields[1])
+			if ip == "" || strings.HasPrefix(ip, "127.") || ip == "::1" || seen[ip] {
+				continue
+			}
+			seen[ip] = true
+			servers = append(servers, ip)
+		}
+	}
+	if len(servers) == 0 {
+		servers = []string{"223.5.5.5", "119.29.29.29"}
+	}
+	var sb strings.Builder
+	for _, s := range servers {
+		sb.WriteString("nameserver ")
+		sb.WriteString(s)
+		sb.WriteByte('\n')
+	}
+	return sb.String(), servers
+}
+
 func buildDebootstrapArgs(distro, suite, arch, rootfs, mirror string, suiteScriptExists, fallbackScriptExists, noCheckGPG bool) ([]string, string) {
 	args := []string{
 		"--arch=" + arch,
@@ -368,9 +401,20 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 			return
 		}
 
-		if resolvBytes, err := os.ReadFile("/etc/resolv.conf"); err == nil {
-			_ = os.WriteFile(filepath.Join(paths.Rootfs, "etc/resolv.conf"), resolvBytes, 0644)
+		var resolvCands []string
+		for _, p := range []string{"/run/systemd/resolve/resolv.conf", "/etc/resolv.conf"} {
+			if b, err := os.ReadFile(p); err == nil {
+				resolvCands = append(resolvCands, string(b))
+			}
 		}
+		resolvContent, dnsServers := buildChrootResolvConf(resolvCands...)
+		chrootResolv := filepath.Join(paths.Rootfs, "etc/resolv.conf")
+		_ = os.Remove(chrootResolv)
+		if err := os.WriteFile(chrootResolv, []byte(resolvContent), 0644); err != nil {
+			taskErr = fmt.Errorf("写入容器临时 DNS 配置失败: %v", err)
+			return
+		}
+		logFn("[INFO] 构建期 chroot DNS: " + strings.Join(dnsServers, ", "))
 
 		for _, sub := range []string{"proc", "sys", "dev", "dev/pts", "run"} {
 			_ = os.MkdirAll(filepath.Join(paths.Rootfs, sub), 0755)
@@ -412,7 +456,7 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 		// 5. Install packages inside container
 		logFn("5. 安装容器内基础包 (systemd, networkd, resolved, openssh-server...)")
 		if err := runStreamCmd(logFn, []string{"DEBIAN_FRONTEND=noninteractive"},
-			"chroot", paths.Rootfs, "apt-get", "update"); err != nil {
+			"chroot", paths.Rootfs, "apt-get", "-o", "APT::Sandbox::User=root", "-o", "Acquire::Retries=3", "update"); err != nil {
 			taskErr = fmt.Errorf("容器内 apt-get update 失败: %v", err)
 			return
 		}
@@ -427,7 +471,7 @@ func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths
 			pkgs = append(pkgs, "git", "jq", "unzip", "zip", "rsync", "net-tools", "lsof", "htop", "tree", "tmux", "build-essential", "pkg-config", "python3", "python3-pip", "python3-venv")
 		}
 
-		chrootArgs := append([]string{paths.Rootfs, "apt-get", "install", "-y"}, pkgs...)
+		chrootArgs := append([]string{paths.Rootfs, "apt-get", "-o", "APT::Sandbox::User=root", "-o", "Acquire::Retries=3", "install", "-y"}, pkgs...)
 		if err := runStreamCmd(logFn, []string{"DEBIAN_FRONTEND=noninteractive"}, "chroot", chrootArgs...); err != nil {
 			taskErr = fmt.Errorf("安装容器软件失败: %v", err)
 			return

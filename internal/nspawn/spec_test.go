@@ -600,3 +600,23 @@ func TestBuildDebootstrapArgs(t *testing.T) {
 		t.Fatalf("expected trailing sid script, got %v", argsDeb)
 	}
 }
+
+func TestBuildChrootResolvConf(t *testing.T) {
+	stubOnly := "# systemd-resolved stub\nnameserver 127.0.0.53\nnameserver ::1\n"
+	content, servers := buildChrootResolvConf(stubOnly, "")
+	if len(servers) != 2 || servers[0] != "223.5.5.5" || servers[1] != "119.29.29.29" {
+		t.Fatalf("expected fallback DNS [223.5.5.5 119.29.29.29], got %v", servers)
+	}
+	if !strings.Contains(content, "nameserver 223.5.5.5\n") {
+		t.Fatalf("unexpected fallback resolv.conf content: %q", content)
+	}
+
+	upstream := "nameserver 192.168.1.1\nnameserver 223.5.5.5\n"
+	content2, servers2 := buildChrootResolvConf(stubOnly, upstream, "nameserver 192.168.1.1\n")
+	if len(servers2) != 2 || servers2[0] != "192.168.1.1" || servers2[1] != "223.5.5.5" {
+		t.Fatalf("expected deduplicated upstream DNS [192.168.1.1 223.5.5.5], got %v", servers2)
+	}
+	if strings.Contains(content2, "127.0.0.53") || strings.Contains(content2, "::1") {
+		t.Fatalf("loopback nameserver leaked into chroot resolv.conf: %q", content2)
+	}
+}
