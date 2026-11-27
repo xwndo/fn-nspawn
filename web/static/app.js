@@ -439,7 +439,7 @@
   function renderAboutModal() {
     const h = state.host || {};
     const me = state.me || {};
-    const ver = h.app_version || '1.4.4';
+    const ver = h.app_version || '1.4.5';
     $('aboutVersion').textContent = `v${ver}`;
     const userDisplay = me.username || 'admin';
     const depPill = (ok) => ok
@@ -455,6 +455,7 @@
       ['Open vSwitch (OVS)', depPill(h.has_ovs)],
       ['Btrfs', depPill(h.has_btrfs)],
       ['debootstrap', depPill(h.has_debootstrap)],
+      ['开源仓库', '<a class="about-repo-link" href="https://github.com/xwndo/fn-nspawn" target="_blank" rel="noopener noreferrer"><svg class="about-link-svg" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-github"/></svg><span>GitHub 仓库</span></a>'],
     ]);
   }
 
@@ -2294,30 +2295,75 @@ ${cdir}/
     }
   }
 
+  function isTerminalLive(session) {
+    return !!(session && (session.status === 'connected' || session.status === 'connecting'));
+  }
+
+  function setTermStatusPill(el, status, text) {
+    if (!el) return;
+    el.textContent = text;
+    const cls = status === 'connected'
+      ? 'is-online'
+      : (status === 'connecting' ? 'is-connecting' : (status === 'error' ? 'is-error' : 'is-offline'));
+    el.className = `term-status-pill ${cls}`;
+  }
+
   function syncTerminalView(machine) {
     Object.entries(state.terminals).forEach(([m, sess]) => {
-      sess.el.hidden = m !== machine;
+      sess.el.hidden = m !== machine || !isTerminalLive(sess);
     });
     const session = machine ? state.terminals[machine] : null;
+    const live = isTerminalLive(session);
+    const selectedItem = machine ? state.containers.find((c) => c.config.machine === machine) : null;
     const hintEl = $('termEmptyHint');
     if (hintEl) {
-      hintEl.hidden = !!session;
-      if (!session) {
-        hintEl.textContent = machine
-          ? `容器 ${machine} 尚未开启终端会话，点击上方“连接终端”建立独立连接`
-          : '请先选择一个容器';
+      hintEl.hidden = live;
+      if (!live) {
+        const badgeEl = $('termEmptyBadge');
+        const textEl = $('termEmptyText');
+        const btnEl = $('btnTermEmptyConnect');
+        if (!machine) {
+          setTermStatusPill(badgeEl, 'offline', '未连接');
+          if (textEl) textEl.textContent = '请先选择一个容器';
+          if (btnEl) btnEl.hidden = true;
+        } else if (!session) {
+          setTermStatusPill(badgeEl, 'offline', '未连接');
+          if (textEl) textEl.textContent = `容器 ${machine} 尚未开启终端会话，点击下方或上方“连接终端”建立独立连接`;
+          if (btnEl) {
+            btnEl.hidden = false;
+            btnEl.textContent = '连接终端';
+          }
+        } else if (session.status === 'error') {
+          setTermStatusPill(badgeEl, 'error', '离线');
+          if (textEl) {
+            textEl.textContent = selectedItem?.runtime?.active_state !== 'active'
+              ? `容器 ${machine} 当前未运行，终端处于离线状态，请先启动容器后再连接`
+              : `容器 ${machine} 终端连接失败或异常中断，当前处于离线状态`;
+          }
+          if (btnEl) {
+            btnEl.hidden = false;
+            btnEl.textContent = '重新连接终端';
+          }
+        } else {
+          setTermStatusPill(badgeEl, 'offline', '已离线');
+          if (textEl) textEl.textContent = `容器 ${machine} 终端已离线，点击下方或上方“连接终端”重新建立连接`;
+          if (btnEl) {
+            btnEl.hidden = false;
+            btnEl.textContent = '重新连接终端';
+          }
+        }
       }
     }
-    const selectedItem = machine ? state.containers.find((c) => c.config.machine === machine) : null;
     const isOpenWrt = selectedItem?.config?.init_mode === 'openwrt';
     $('termUser').value = isOpenWrt ? 'root' : ((machine && state.termUsers[machine]) || session?.user || 'root');
     $('termUser').disabled = !!isOpenWrt;
-    $('termStatus').textContent = session ? session.statusText : '未连接';
-    $('btnTermDisconnect').disabled = !(session && session.ws && (session.ws.readyState === WebSocket.OPEN || session.ws.readyState === WebSocket.CONNECTING));
+    setTermStatusPill($('termStatus'), session ? session.status : 'offline', session ? session.statusText : '未连接');
+    $('btnTermDisconnect').disabled = !live;
+    if ($('btnTermClear')) $('btnTermClear').disabled = !live;
 
-    if (state.activeTab === 'terminal' && session) {
+    if (state.activeTab === 'terminal' && live) {
       setTimeout(() => {
-        if (state.selectedMachine === machine && state.activeTab === 'terminal') {
+        if (state.selectedMachine === machine && state.activeTab === 'terminal' && isTerminalLive(session)) {
           session.fitAddon.fit();
           sendResize(session);
           session.term.focus();
@@ -2331,12 +2377,15 @@ ${cdir}/
     const user = $('termUser').value.trim() || 'root';
     state.termUsers[machine] = user;
 
-    disconnectTerminal(machine);
+    disconnectTerminal(machine, { silent: true });
     const session = getOrCreateTerminalSession(machine);
     session.user = user;
     session.status = 'connecting';
     session.statusText = '连接中...';
-    session.term.reset();
+    try {
+      session.term.options.cursorBlink = true;
+      session.term.reset();
+    } catch (_) {}
 
     if (state.selectedMachine === machine) {
       syncTerminalView(machine);
@@ -2353,11 +2402,11 @@ ${cdir}/
       if (session.ws !== ws) return;
       session.status = 'connected';
       session.statusText = `已连接 (${user}@${machine})`;
+      try {
+        session.term.options.cursorBlink = true;
+      } catch (_) {}
       if (state.selectedMachine === machine) {
-        $('termStatus').textContent = session.statusText;
-        $('btnTermDisconnect').disabled = false;
-        session.fitAddon.fit();
-        session.term.focus();
+        syncTerminalView(machine);
       }
       sendResize(session);
       renderContainerList();
@@ -2372,40 +2421,53 @@ ${cdir}/
     };
     ws.onclose = () => {
       if (session.ws !== ws) return;
+      const wasError = session.status === 'error';
       session.ws = null;
-      session.status = 'disconnected';
-      session.statusText = '已断开';
+      session.status = wasError ? 'error' : 'disconnected';
+      session.statusText = wasError ? '连接失败 · 离线' : '离线';
+      try {
+        session.term.options.cursorBlink = false;
+        session.term.reset();
+      } catch (_) {}
       if (state.selectedMachine === machine) {
-        $('termStatus').textContent = session.statusText;
-        $('btnTermDisconnect').disabled = true;
+        syncTerminalView(machine);
       }
       renderContainerList();
     };
     ws.onerror = () => {
       if (session.ws !== ws) return;
       session.status = 'error';
-      session.statusText = '连接异常';
+      session.statusText = '连接失败 · 离线';
       if (state.selectedMachine === machine) {
-        $('termStatus').textContent = session.statusText;
+        syncTerminalView(machine);
       }
       renderContainerList();
     };
   }
 
-  function disconnectTerminal(machine = state.selectedMachine) {
+  function disconnectTerminal(machine = state.selectedMachine, opts = {}) {
     if (!machine) return;
     const session = state.terminals[machine];
-    if (!session || !session.ws) return;
+    if (!session || (!session.ws && session.status !== 'connecting')) return;
     const ws = session.ws;
     session.ws = null;
     session.status = 'disconnected';
-    session.statusText = '已断开';
-    ws.close();
-    if (state.selectedMachine === machine) {
-      $('termStatus').textContent = session.statusText;
-      $('btnTermDisconnect').disabled = true;
+    session.statusText = '离线';
+    try {
+      session.term.options.cursorBlink = false;
+      session.term.reset();
+    } catch (_) {}
+    if (ws) {
+      try {
+        ws.close();
+      } catch (_) {}
     }
-    renderContainerList();
+    if (!opts.silent) {
+      if (state.selectedMachine === machine) {
+        syncTerminalView(machine);
+      }
+      renderContainerList();
+    }
   }
 
   function disposeTerminal(machine) {
@@ -2427,7 +2489,7 @@ ${cdir}/
   function fitActiveTerminal() {
     if (state.activeTab !== 'terminal' || !state.selectedMachine) return;
     const session = state.terminals[state.selectedMachine];
-    if (session) {
+    if (isTerminalLive(session)) {
       session.fitAddon.fit();
       sendResize(session);
     }
@@ -2451,6 +2513,9 @@ ${cdir}/
   });
 
   $('btnTermConnect').addEventListener('click', () => connectTerminal(state.selectedMachine));
+  if ($('btnTermEmptyConnect')) {
+    $('btnTermEmptyConnect').addEventListener('click', () => connectTerminal(state.selectedMachine));
+  }
   $('btnTermDisconnect').addEventListener('click', () => disconnectTerminal(state.selectedMachine));
   $('btnTermClear').addEventListener('click', () => {
     const session = state.selectedMachine ? state.terminals[state.selectedMachine] : null;

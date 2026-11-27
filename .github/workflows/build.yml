@@ -97,6 +97,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -110,9 +115,55 @@ jobs:
           sha256sum *.fpk > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      - name: Extract release notes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          tag = os.environ["TAG_NAME"]
+          notes = ""
+          changelog = Path("CHANGELOG.md")
+          if changelog.is_file():
+              text = changelog.read_text(encoding="utf-8")
+              pattern = rf"(?ms)^##\s+\[?{re.escape(tag)}\]?[^\n]*\n(.*?)(?=^##\s+|\Z)"
+              m = re.search(pattern, text)
+              if m:
+                  notes = m.group(1).strip()
+
+          if not notes:
+              res = subprocess.run(
+                  ["git", "tag", "-l", "--format=%(contents)", tag],
+                  capture_output=True,
+                  text=True,
+                  check=False,
+              )
+              notes = res.stdout.strip()
+
+          parts = []
+          if notes:
+              parts.append(notes)
+          parts.append(
+              "### 安装说明\n"
+              f"- **x86_64 架构**：下载 `fn-nspawn-{tag}-x86.fpk`\n"
+              f"- **ARM64 架构**：下载 `fn-nspawn-{tag}-arm.fpk`\n"
+              "- 打开飞牛 fnOS「应用中心 → 手动安装」，选择对应架构的 `.fpk` 安装包上传覆盖升级即可（已创建的容器与 `container.json` 配置会自动保留）。\n"
+              "- 可选校验下载完整性：`sha256sum -c SHA256SUMS.txt`"
+          )
+          out = "\n\n".join(parts) + "\n"
+          Path("release_notes.md").write_text(out, encoding="utf-8")
+          print(out)
+          PY
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ github.ref_name }}
+          body_path: release_notes.md
           generate_release_notes: true
           files: |
             dist/*.fpk
