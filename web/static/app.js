@@ -306,24 +306,32 @@
   async function loadInitial() {
     initSidebarResizer();
     updateThemeButton();
-    if (!state.initialized) {
-      updateEmptyState('loading');
+    if (!state.initialized && $('bootLoading')) {
+      $('bootLoading').hidden = false;
+      $('emptyState').hidden = true;
+      $('detailView').hidden = true;
     }
     try {
-      const [me, host, settings] = await Promise.all([
+      const [me, host, settings, containers] = await Promise.all([
         apiFetch('/api/me').catch(() => ({ username: 'admin' })),
         apiFetch('/api/host'),
         apiFetch('/api/settings'),
+        apiFetch('/api/containers'),
       ]);
       state.me = me;
       state.host = host;
       state.settings = settings;
       renderHost();
-      await loadContainers();
-      await loadTasks();
+      applyContainersList(containers);
+      loadTasks().catch(() => {});
       startAutoRefresh();
     } catch (err) {
-      updateEmptyState('error', err.message);
+      if ($('bootLoading')) $('bootLoading').hidden = true;
+      if (!state.initialized) {
+        updateEmptyState('error', err.message);
+        $('emptyState').hidden = false;
+        $('detailView').hidden = true;
+      }
       if (!state.containers.length) {
         $('containerList').innerHTML = `
           <div class="sidebar-empty">
@@ -431,7 +439,7 @@
   function renderAboutModal() {
     const h = state.host || {};
     const me = state.me || {};
-    const ver = h.app_version || '1.4.3';
+    const ver = h.app_version || '1.4.4';
     $('aboutVersion').textContent = `v${ver}`;
     const userDisplay = me.username || 'admin';
     const depPill = (ok) => ok
@@ -622,9 +630,9 @@
     desc.innerHTML = defaultDesc;
   }
 
-  async function loadContainers(silent = false) {
-    const list = await apiFetch('/api/containers');
+  function applyContainersList(list, silent = false) {
     state.initialized = true;
+    if ($('bootLoading')) $('bootLoading').hidden = true;
     state.containers = list || [];
     updateLiveMetrics(state.containers);
     $('containerCount').textContent = String(state.containers.length);
@@ -649,6 +657,11 @@
       $('detailView').hidden = true;
       syncTerminalView(null);
     }
+  }
+
+  async function loadContainers(silent = false) {
+    const list = await apiFetch('/api/containers');
+    applyContainersList(list, silent);
   }
 
   function renderContainerList() {

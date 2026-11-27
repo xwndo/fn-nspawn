@@ -104,7 +104,16 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/ws/logs", s.handleWSLogs)
 
 	fileServer := http.FileServer(http.FS(s.staticFS))
-	s.mux.Handle("/", fileServer)
+	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/vendor/") {
+			w.Header().Set("Cache-Control", "public, max-age=604800")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 func rejectForbidden(w http.ResponseWriter, r *http.Request, msg string) {

@@ -6,7 +6,14 @@
   <meta name="theme-color" id="metaThemeColor" content="#141a26" />
   <title>nspawn容器 · fnOS systemd-nspawn</title>
   <link rel="stylesheet" href="./vendor/xterm.css" />
-  <link rel="stylesheet" href="./app.css" />
+  <link rel="stylesheet" href="./app.css?v=1.4.4" />
+  <style>
+    [hidden]{display:none!important}
+    svg.sidebar-title-logo{width:22px;height:22px;flex-shrink:0}
+    svg.btn-svg{width:18px;height:18px}
+    svg.btn-inline-svg{width:14px;height:14px}
+    svg.dropdown-svg{width:18px;height:18px}
+  </style>
   <script>
     (function () {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
@@ -55,7 +62,7 @@
       <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
           <div class="sidebar-title-group">
-            <svg class="sidebar-title-logo" viewBox="0 0 32 32" aria-hidden="true">
+            <svg class="sidebar-title-logo" width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
               <defs>
                 <linearGradient id="fnCubeStroke" x1="4" y1="6" x2="28" y2="26" gradientUnits="userSpaceOnUse">
                   <stop offset="0%" stop-color="#3b82f6"/>
@@ -87,17 +94,17 @@
             <button type="button" class="btn btn-sm btn-primary btn-add-compact" id="btnAddContainerMenu" aria-haspopup="menu" aria-expanded="false">+ 新建容器</button>
             <div class="create-dropdown" id="createDropdown" role="menu" hidden>
               <button type="button" class="dropdown-item" id="btnCreateModal" role="menuitem">
-                <svg class="dropdown-svg" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus-circle"/></svg>
+                <svg class="dropdown-svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-plus-circle"/></svg>
                 <span>创建容器</span>
               </button>
               <button type="button" class="dropdown-item" id="btnImportModal" role="menuitem">
-                <svg class="dropdown-svg" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-folder-in"/></svg>
+                <svg class="dropdown-svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-folder-in"/></svg>
                 <span>从配置恢复</span>
               </button>
             </div>
           </div>
           <button class="btn btn-sm btn-ghost btn-with-icon" id="btnRefresh" title="刷新容器列表与状态">
-            <svg class="btn-inline-svg" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>
+            <svg class="btn-inline-svg" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-refresh"/></svg>
             <span>刷新</span>
           </button>
         </div>
@@ -109,17 +116,17 @@
         </div>
         <div class="sidebar-footer" aria-label="系统功能">
           <button class="btn btn-icon ios-btn-settings" id="btnSettings" title="设置" aria-label="设置">
-            <svg class="btn-svg" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
+            <svg class="btn-svg" width="18" height="18" viewBox="0 0 24 24"><use href="#i-settings"/></svg>
           </button>
           <button class="btn btn-icon ios-btn-tasks" id="btnTasks" title="任务中心" aria-label="任务中心">
-            <svg class="btn-svg" viewBox="0 0 24 24"><use href="#i-tasks"/></svg>
+            <svg class="btn-svg" width="18" height="18" viewBox="0 0 24 24"><use href="#i-tasks"/></svg>
             <span class="icon-badge" id="taskBadge" hidden>0</span>
           </button>
           <button class="btn btn-icon ios-btn-about" id="btnAbout" title="关于" aria-label="关于">
-            <svg class="btn-svg" viewBox="0 0 24 24"><use href="#i-info"/></svg>
+            <svg class="btn-svg" width="18" height="18" viewBox="0 0 24 24"><use href="#i-info"/></svg>
           </button>
           <button class="btn btn-icon ios-btn-theme is-dark" id="btnThemeToggle" title="切换外观" aria-label="切换外观">
-            <svg class="btn-svg" viewBox="0 0 24 24"><use id="themeIconUse" href="#i-sun"/></svg>
+            <svg class="btn-svg" width="18" height="18" viewBox="0 0 24 24"><use id="themeIconUse" href="#i-sun"/></svg>
           </button>
         </div>
       </aside>
@@ -136,10 +143,41 @@
             <button type="button" class="btn btn-sm btn-warning" id="btnRecheckOVS">重新检测 OVS</button>
           </div>
         </div>
-        <div class="empty-state-wrap" id="emptyState">
+        <div class="boot-loading" id="bootLoading" aria-hidden="true">
+          <div class="skel-header">
+            <div class="skel-row">
+              <div class="skel-avatar"></div>
+              <div style="flex:1;min-width:0;">
+                <div class="skel-line w-35"></div>
+                <div class="skel-line w-55"></div>
+              </div>
+            </div>
+          </div>
+          <div class="skel-grid">
+            <div class="skel-card">
+              <div class="skel-line w-40"></div>
+              <div class="skel-line w-80"></div>
+              <div class="skel-line w-65"></div>
+              <div class="skel-line w-70"></div>
+            </div>
+            <div class="skel-card">
+              <div class="skel-line w-45"></div>
+              <div class="skel-line w-75"></div>
+              <div class="skel-line w-60"></div>
+              <div class="skel-line w-85"></div>
+            </div>
+            <div class="skel-card skel-card-span-2">
+              <div class="skel-line w-30"></div>
+              <div class="skel-line w-90"></div>
+              <div class="skel-line w-80"></div>
+              <div class="skel-line w-65"></div>
+            </div>
+          </div>
+        </div>
+        <div class="empty-state-wrap" id="emptyState" hidden>
           <div class="empty-state-card">
             <div class="empty-emblem" aria-hidden="true">
-              <svg viewBox="0 0 24 24"><use href="#i-cube"/></svg>
+              <svg width="32" height="32" viewBox="0 0 24 24"><use href="#i-cube"/></svg>
             </div>
             <div>
               <span class="empty-status-pill" id="emptyStatusPill">
@@ -155,15 +193,15 @@
             </div>
             <div class="empty-features">
               <div class="empty-feature">
-                <div class="empty-feature-head"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>独立目录持久化</div>
+                <div class="empty-feature-head"><svg width="16" height="16" viewBox="0 0 24 24"><use href="#i-folder"/></svg>独立目录持久化</div>
                 <p>配置、根文件系统与归档镜像集中存放，迁移零散配置烦恼。</p>
               </div>
               <div class="empty-feature">
-                <div class="empty-feature-head"><svg viewBox="0 0 24 24"><use href="#i-net"/></svg>OVS 桥接网络</div>
+                <div class="empty-feature-head"><svg width="16" height="16" viewBox="0 0 24 24"><use href="#i-net"/></svg>OVS 桥接网络</div>
                 <p>自动桥接宿主机物理网卡，容器获取独立局域网 IP。</p>
               </div>
               <div class="empty-feature">
-                <div class="empty-feature-head"><svg viewBox="0 0 24 24"><use href="#i-shield"/></svg>快照与一键恢复</div>
+                <div class="empty-feature-head"><svg width="16" height="16" viewBox="0 0 24 24"><use href="#i-shield"/></svg>快照与一键恢复</div>
                 <p>原生 Btrfs 子卷瞬时快照，重装系统后可快速恢复实例。</p>
               </div>
             </div>
@@ -931,7 +969,7 @@
           <div style="min-width:0;flex:1;">
             <div class="row-gap" style="flex-wrap:wrap;">
               <strong style="font-size:16px;">nspawn容器</strong>
-              <span class="pill pill-ok" id="aboutVersion">v1.4.3</span>
+              <span class="pill pill-ok" id="aboutVersion">v1.4.4</span>
             </div>
             <div class="muted" style="margin-top:2px;">飞牛 fnOS 原生 systemd-nspawn + OVS + Btrfs 系统容器可视化管理器</div>
           </div>
@@ -985,6 +1023,6 @@
 
   <script src="./vendor/xterm.js"></script>
   <script src="./vendor/addon-fit.js"></script>
-  <script src="./app.js"></script>
+  <script src="./app.js?v=1.4.4"></script>
 </body>
 </html>

@@ -21,7 +21,7 @@ import (
 )
 
 var (
-	AppVersion    = "1.4.3"
+	AppVersion    = "1.4.4"
 	reMachineName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 	reUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 )

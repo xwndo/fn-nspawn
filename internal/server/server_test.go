@@ -82,7 +82,7 @@ func TestServerAuthTransportAndPeerCredBoundaries(t *testing.T) {
 	// 5. Trusted Unix socket peer + admin header -> 200 with ws_token
 	reqOK := httptest.NewRequest(http.MethodGet, "/app/fn-nspawn/api/me", nil)
 	reqOK.Header.Set("X-Trim-Userid", "1000")
-	reqOK.Header.Set("X-Trim-Username", "superwr")
+	reqOK.Header.Set("X-Trim-Username", "admin")
 	reqOK.Header.Set("X-Trim-Isadmin", "true")
 	reqOK = reqOK.WithContext(WithTransportForTest(reqOK.Context(), "unix", true))
 	recOK := httptest.NewRecorder()
