@@ -1,8 +1,24 @@
 # fn-nspawn —— nspawn容器（飞牛 fnOS 原生 systemd-nspawn 可视化管理器）
 
+[![Build and Release fpk](https://github.com/xwndo/fn-nspawn/actions/workflows/build.yml/badge.svg)](https://github.com/xwndo/fn-nspawn/actions/workflows/build.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/xwndo/fn-nspawn)](https://github.com/xwndo/fn-nspawn/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 面向飞牛私有云（fnOS）的轻量化原生系统容器可视化管理器（**Go 单二进制后端 + 飞牛统一网关 Unix Socket + 内嵌 Web UI & 独立网页终端**）。
 
 软件本身只负责编排与管理，容器的根文件系统、格式化配置及镜像快照全部持久化在各自独立的容器目录内，支持**宿主机开机自启、重装系统/换盘一键恢复、外部 `systemd-nspawn` 容器自动发现与无损安全迁移**。
+
+---
+
+## 界面预览
+
+| 深色主题 · 概览与状态探针 | 浅色主题 · 概览与状态探针 |
+| :---: | :---: |
+| ![深色主题概览](docs/screenshots/overview-dark.png) | ![浅色主题概览](docs/screenshots/overview-light.png) |
+
+| Btrfs 子卷快照与镜像归档 | 外部容器自动发现与安全迁移 |
+| :---: | :---: |
+| ![快照与镜像归档](docs/screenshots/snapshots.png) | ![安全迁移为标准容器](docs/screenshots/external-migrate.png) |
 
 ---
 
@@ -76,6 +92,13 @@ bash scripts/build.sh
 ```
 
 构建脚本会自动编译静态 Linux 二进制至 `fpk/app/bin/fn-nspawn`，规范化 `fpk/` 脚本换行与权限，并在 `dist/` 下生成 `fn-nspawn-v<version>-<platform>.fpk`。
+
+### 方式三：自动构建与发版（GitHub Actions）
+
+仓库已配置 [`.github/workflows/build.yml`](.github/workflows/build.yml)：
+
+- **持续集成验证（`push` 到 `main` / Pull Request）**：自动执行 Go 单元测试（`go test`）、双架构 `go vet`（`amd64` & `arm64`）、前端 JS 语法校验（`node --check`）、FPK JSON 与脚本语法校验，并并行构建 `x86`（`amd64`）与 `arm`（`arm64`）两个平台的 `.fpk` 构建产物上传为 Actions Artifacts（也支持在 Actions 页面点击 `Run workflow` 手动触发）。
+- **自动发版（推送 `v*` 标签）**：当推送类似 `v1.3.4` 的版本标签时，工作流会在构建完成后自动创建对应的 GitHub Release，并附带 `fn-nspawn-v<version>-x86.fpk`、`fn-nspawn-v<version>-arm.fpk` 及 `SHA256SUMS.txt` 校验文件。
 
 ---
 

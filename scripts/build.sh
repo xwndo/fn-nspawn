@@ -6,10 +6,11 @@ cd "$ROOT_DIR"
 
 HOST_ARCH="$(uname -m)"
 case "$HOST_ARCH" in
-  x86_64|amd64) TARGET_ARCH="${TARGET_ARCH:-amd64}" ;;
-  aarch64|arm64) TARGET_ARCH="${TARGET_ARCH:-arm64}" ;;
-  *) TARGET_ARCH="${TARGET_ARCH:-amd64}" ;;
+  x86_64|amd64) HOST_GOARCH="amd64" ;;
+  aarch64|arm64) HOST_GOARCH="arm64" ;;
+  *) HOST_GOARCH="amd64" ;;
 esac
+TARGET_ARCH="${TARGET_ARCH:-$HOST_GOARCH}"
 
 case "$TARGET_ARCH" in
   arm64) FN_PLATFORM="arm" ;;
@@ -17,6 +18,10 @@ case "$TARGET_ARCH" in
 esac
 
 APP_VERSION="$(grep -E '^version=' fpk/manifest | head -n1 | cut -d= -f2 | tr -d '\r ')"
+if [ -z "$APP_VERSION" ]; then
+  echo "无法从 fpk/manifest 解析 version" >&2
+  exit 1
+fi
 
 echo "[1/5] 编译 Go 二进制 (linux/${TARGET_ARCH} v${APP_VERSION} -> platform=${FN_PLATFORM})..."
 mkdir -p fpk/app/bin dist tools
@@ -43,7 +48,7 @@ if [ -z "$FNPACK_BIN" ]; then
   FNPACK_BIN="$ROOT_DIR/tools/fnpack"
   if [ ! -x "$FNPACK_BIN" ]; then
     FNPACK_VER="${FNPACK_VER:-1.2.3}"
-    URL="https://static2.fnnas.com/fnpack/fnpack-${FNPACK_VER}-linux-${TARGET_ARCH}"
+    URL="https://static2.fnnas.com/fnpack/fnpack-${FNPACK_VER}-linux-${HOST_GOARCH}"
     echo "未检测到 fnpack，正在下载: $URL"
     curl -fsSL "$URL" -o "$FNPACK_BIN"
     chmod 755 "$FNPACK_BIN"
