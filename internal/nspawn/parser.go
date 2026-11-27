@@ -112,20 +112,10 @@ func ParseServiceFile(servicePath string, systemdLinkPath string) (*ContainerCon
 		cfg.ConfigFile = filepath.Join(cfg.ConfDir, ContainerSpecFileName)
 
 		if spec, err := ReadContainerSpec(cfg.ConfigFile); err == nil {
-			cfg.HasConfigFile = true
-			cfg.Description = spec.Description
-			cfg.Autostart = spec.System.Autostart
-			cfg.ContainerUser = spec.System.ContainerUser
-			cfg.InitMode = spec.System.InitMode
-			cfg.EnableTun = spec.System.EnableTun
-			cfg.SourceType = spec.Image.SourceType
-			cfg.Distro = spec.Image.Distro
-			cfg.Suite = spec.Image.Suite
-			cfg.Arch = spec.Image.Arch
-			cfg.Mirror = spec.Image.Mirror
-			cfg.SecurityMirror = spec.Image.SecurityMirror
-			cfg.SourceArchive = spec.Image.SourceArchive
-			cfg.Backup = cloneSpecBackup(spec.Backup)
+			reconciled := SpecToConfig(*spec, cfg.ContainerDir, systemdLinkPath)
+			reconciled.ServicePath = cfg.ServicePath
+			reconciled.LinkHealthy = isSystemdUnitSynced(systemdLinkPath, cfg.ServicePath)
+			cfg = reconciled
 		}
 	} else {
 		// Legacy layout: <BaseRoot>/<Machine>/rootfs + <BaseRoot>/<Machine>-conf/
@@ -139,18 +129,28 @@ func ParseServiceFile(servicePath string, systemdLinkPath string) (*ContainerCon
 			cfg.ContainerDir = filepath.Join(cfg.BaseRoot, cfg.Machine)
 		}
 		cfg.SnapshotDir = filepath.Join(cfg.BaseRoot, "snapshots")
+		cfg.ExportsDir = filepath.Join(cfg.ContainerDir, "images", "exports")
+		cfg.ConfigFile = filepath.Join(cfg.ConfDir, ContainerSpecFileName)
+		if spec, err := ReadContainerSpec(cfg.ConfigFile); err == nil {
+			cfg.HasConfigFile = true
+			cfg.Description = spec.Description
+			cfg.Autostart = spec.System.Autostart
+			cfg.Backup = cloneSpecBackup(spec.Backup)
+		}
 	}
 
 	if execStartPost != "" {
 		postScript := strings.Fields(execStartPost)[0]
 		if _, err := os.Stat(postScript); err == nil {
 			cfg.HasNetUp = true
-			if b, err := os.ReadFile(postScript); err == nil {
-				if m := rePhysicalNIC.FindStringSubmatch(string(b)); len(m) > 1 {
-					cfg.PhysicalNIC = m[1]
-				}
-				if m := reVeth.FindStringSubmatch(string(b)); len(m) > 1 {
-					cfg.Veth = m[1]
+			if !cfg.HasConfigFile || cfg.Layout == LayoutLegacy {
+				if b, err := os.ReadFile(postScript); err == nil {
+					if m := rePhysicalNIC.FindStringSubmatch(string(b)); len(m) > 1 {
+						cfg.PhysicalNIC = m[1]
+					}
+					if m := reVeth.FindStringSubmatch(string(b)); len(m) > 1 {
+						cfg.Veth = m[1]
+					}
 				}
 			}
 		}
@@ -158,11 +158,13 @@ func ParseServiceFile(servicePath string, systemdLinkPath string) (*ContainerCon
 		netUp := filepath.Join(cfg.ConfDir, "network-up.sh")
 		if b, err := os.ReadFile(netUp); err == nil {
 			cfg.HasNetUp = true
-			if m := rePhysicalNIC.FindStringSubmatch(string(b)); len(m) > 1 {
-				cfg.PhysicalNIC = m[1]
-			}
-			if m := reVeth.FindStringSubmatch(string(b)); len(m) > 1 {
-				cfg.Veth = m[1]
+			if !cfg.HasConfigFile || cfg.Layout == LayoutLegacy {
+				if m := rePhysicalNIC.FindStringSubmatch(string(b)); len(m) > 1 {
+					cfg.PhysicalNIC = m[1]
+				}
+				if m := reVeth.FindStringSubmatch(string(b)); len(m) > 1 {
+					cfg.Veth = m[1]
+				}
 			}
 		}
 	}
@@ -309,13 +311,29 @@ func parseExecStartArgs(execStart string, cfg *ContainerConfig) {
 }
 
 func parseBindValue(v string, readOnly bool) (BindMount, bool) {
-	parts := strings.SplitN(v, ":", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+	startIdx := 0
+	if len(v) >= 3 && v[1] == ':' && (v[2] == '\\' || v[2] == '/') {
+		startIdx = 2
+	}
+	sepOffset := strings.IndexByte(v[startIdx:], ':')
+	if sepOffset < 0 {
+		return BindMount{}, false
+	}
+	sep := startIdx + sepOffset
+	hostPath := v[:sep]
+	rest := v[sep+1:]
+	contPath := rest
+	if optSep := strings.IndexByte(rest, ':'); optSep >= 0 {
+		if !(len(rest) >= 3 && optSep == 1 && (rest[2] == '\\' || rest[2] == '/')) {
+			contPath = rest[:optSep]
+		}
+	}
+	if hostPath == "" || contPath == "" {
 		return BindMount{}, false
 	}
 	return BindMount{
-		HostPath:      parts[0],
-		ContainerPath: parts[1],
+		HostPath:      hostPath,
+		ContainerPath: contPath,
 		ReadOnly:      readOnly,
 	}, true
 }

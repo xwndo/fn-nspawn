@@ -4,6 +4,10 @@ export PATH="/usr/local/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 chmod 755 "${TRIM_APPDEST}/bin/fn-nspawn" 2>/dev/null || true
 mkdir -p "${TRIM_PKGETC}" "${TRIM_PKGVAR}"
 
+json_escape() {
+    printf '%s' "$1" | tr -d '\r\n\000' | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 detect_ovs_nic() {
     command -v ovs-vsctl >/dev/null 2>&1 || return 0
     local nic
@@ -22,19 +26,21 @@ detect_ovs_nic() {
 
 CFG_FILE="${TRIM_PKGETC}/config.json"
 if [ ! -f "$CFG_FILE" ] && [ -n "${wizard_base_root:-}" ]; then
-    DEFAULT_NIC="$(detect_ovs_nic)"
+    SAFE_BASE_ROOT="$(json_escape "${wizard_base_root}")"
+    SAFE_NIC="$(json_escape "$(detect_ovs_nic)")"
     cat > "$CFG_FILE" <<EOF
 {
-  "standard_base_root": "${wizard_base_root}",
+  "standard_base_root": "${SAFE_BASE_ROOT}",
   "base_roots": [
-    "${wizard_base_root}"
+    "${SAFE_BASE_ROOT}"
   ],
-  "default_physical_nic": "${DEFAULT_NIC}",
+  "default_physical_nic": "${SAFE_NIC}",
   "default_mirror": "https://mirrors.ustc.edu.cn/debian",
   "default_security_mirror": "https://mirrors.ustc.edu.cn/debian-security",
   "default_suite": "trixie",
   "default_tmp_size": "4G"
 }
 EOF
+    chmod 644 "$CFG_FILE" 2>/dev/null || true
 fi
 exit 0

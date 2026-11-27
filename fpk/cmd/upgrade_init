@@ -1,2 +1,10 @@
 #!/bin/bash
+if [ -n "${TRIM_APPDEST:-}" ] && [ -x "${TRIM_APPDEST}/../cmd/main" ]; then
+    "${TRIM_APPDEST}/../cmd/main" stop >/dev/null 2>&1 || true
+elif [ -n "${TRIM_PKGVAR:-}" ] && [ -f "${TRIM_PKGVAR}/fn-nspawn.pid" ]; then
+    old_pid="$(cat "${TRIM_PKGVAR}/fn-nspawn.pid" 2>/dev/null || true)"
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        kill -TERM "$old_pid" 2>/dev/null || true
+    fi
+fi
 exit 0

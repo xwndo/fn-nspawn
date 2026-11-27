@@ -34,6 +34,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		"userid":   r.Header.Get("X-Trim-Userid"),
 		"is_admin": s.devMode || r.Header.Get("X-Trim-Isadmin") == "true",
 		"dev_mode": s.devMode,
+		"ws_token": s.wsToken,
 	})
 }
 
@@ -71,6 +72,22 @@ func (s *Server) handleOnlineImages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleOnlineImageCache(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, s.mgr.InspectOnlineImageCache())
+	case http.MethodDelete:
+		res, err := s.mgr.ClearOnlineImageCache()
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *Server) handleCronPreview(w http.ResponseWriter, r *http.Request) {

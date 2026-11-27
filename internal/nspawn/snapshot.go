@@ -35,7 +35,7 @@ func (m *Manager) ListSnapshots(machine string) ([]SnapshotInfo, error) {
 			continue
 		}
 		sp := filepath.Join(snapDir, e.Name())
-		showOut, err := exec.Command("btrfs", "subvolume", "show", sp).Output()
+		showOut, err := execOutputTimeout(defaultProbeTimeout, "btrfs", "subvolume", "show", sp)
 		if err != nil {
 			continue
 		}
@@ -59,7 +59,7 @@ func (m *Manager) ListSnapshots(machine string) ([]SnapshotInfo, error) {
 				}
 			}
 		}
-		if propOut, err := exec.Command("btrfs", "property", "get", sp, "ro").Output(); err == nil {
+		if propOut, err := execOutputTimeout(defaultProbeTimeout, "btrfs", "property", "get", sp, "ro"); err == nil {
 			if strings.Contains(string(propOut), "ro=true") {
 				sn.ReadOnly = true
 			}
@@ -91,6 +91,15 @@ func sanitizeTag(tag string, fallback string) string {
 }
 
 func (m *Manager) CreateSnapshot(machine string, req CreateSnapshotRequest) (*SnapshotInfo, error) {
+	releaseOp, err := m.acquireContainerOp("create-snapshot", machine)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseOp()
+	return m.createSnapshotUnlocked(machine, req)
+}
+
+func (m *Manager) createSnapshotUnlocked(machine string, req CreateSnapshotRequest) (*SnapshotInfo, error) {
 	info, err := m.GetContainer(machine)
 	if err != nil {
 		return nil, err
@@ -108,13 +117,12 @@ func (m *Manager) CreateSnapshot(machine string, req CreateSnapshotRequest) (*Sn
 	snapPath := filepath.Join(info.Config.SnapshotDir, snapName)
 
 	wasRunning := info.Runtime.ActiveState == "active"
+	stopped := false
 	if req.StopFirst && wasRunning {
-		if err := m.ControlService(machine, "stop"); err != nil {
+		if err := m.controlServiceUnlocked(machine, "stop"); err != nil {
 			return nil, fmt.Errorf("停止容器失败: %v", err)
 		}
-		defer func() {
-			_ = m.ControlService(machine, "start")
-		}()
+		stopped = true
 	}
 
 	args := []string{"subvolume", "snapshot"}
@@ -123,8 +131,17 @@ func (m *Manager) CreateSnapshot(machine string, req CreateSnapshotRequest) (*Sn
 	}
 	args = append(args, info.Config.Rootfs, snapPath)
 
-	if out, err := exec.Command("btrfs", args...).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("创建快照失败: %v (%s)", err, strings.TrimSpace(string(out)))
+	out, snapErr := exec.Command("btrfs", args...).CombinedOutput()
+	if stopped {
+		if startErr := m.controlServiceUnlocked(machine, "start"); startErr != nil {
+			if snapErr != nil {
+				return nil, fmt.Errorf("创建快照失败: %v (%s)；且重新启动容器失败: %v", snapErr, strings.TrimSpace(string(out)), startErr)
+			}
+			return nil, fmt.Errorf("快照 %s 已创建，但重新启动容器失败: %v", snapName, startErr)
+		}
+	}
+	if snapErr != nil {
+		return nil, fmt.Errorf("创建快照失败: %v (%s)", snapErr, strings.TrimSpace(string(out)))
 	}
 
 	return &SnapshotInfo{
@@ -136,6 +153,15 @@ func (m *Manager) CreateSnapshot(machine string, req CreateSnapshotRequest) (*Sn
 }
 
 func (m *Manager) DeleteSnapshot(machine string, snapName string) error {
+	releaseOp, err := m.acquireContainerOp("delete-snapshot", machine)
+	if err != nil {
+		return err
+	}
+	defer releaseOp()
+	return m.deleteSnapshotUnlocked(machine, snapName)
+}
+
+func (m *Manager) deleteSnapshotUnlocked(machine string, snapName string) error {
 	info, err := m.GetContainer(machine)
 	if err != nil {
 		return err
@@ -162,12 +188,18 @@ func (m *Manager) StartRollbackTask(machine string, req RollbackRequest) (*TaskR
 		return nil, fmt.Errorf("非法的快照名称: %s", req.SnapshotName)
 	}
 	snapPath := filepath.Join(info.Config.SnapshotDir, req.SnapshotName)
-	if err := exec.Command("btrfs", "subvolume", "show", snapPath).Run(); err != nil {
+	if err := execRunTimeout(defaultProbeTimeout, "btrfs", "subvolume", "show", snapPath); err != nil {
 		return nil, fmt.Errorf("快照不是有效的 Btrfs 子卷: %s", snapPath)
+	}
+
+	releaseOp, err := m.acquireContainerOp("rollback", machine)
+	if err != nil {
+		return nil, err
 	}
 
 	task := m.tasks.Create("rollback", machine)
 	go func() {
+		defer releaseOp()
 		var taskErr error
 		defer func() {
 			m.tasks.Finish(task.ID, taskErr)
@@ -180,17 +212,26 @@ func (m *Manager) StartRollbackTask(machine string, req RollbackRequest) (*TaskR
 		cfg := info.Config
 		logFn(fmt.Sprintf("开始回滚容器 %s 到快照 %s", cfg.Machine, req.SnapshotName))
 
-		// 1. Stop container
+		// 1. Stop container and wait until inactive so rootfs is cleanly released
 		logFn("1. 停止容器服务 " + cfg.ServiceName)
 		if err := runCmdLogged(logFn, "systemctl", "stop", cfg.ServiceName); err != nil {
 			taskErr = fmt.Errorf("停止容器失败: %v", err)
 			return
 		}
-		time.Sleep(2 * time.Second)
+		machinectlBin := lookBinary("machinectl", "/usr/bin/machinectl", "/bin/machinectl")
+		for i := 0; i < 15; i++ {
+			actOut, _ := execOutputTimeout(2*time.Second, "systemctl", "is-active", cfg.ServiceName)
+			mOut, _ := execOutputTimeout(2*time.Second, machinectlBin, "show", cfg.Machine, "--property=State", "--no-pager")
+			if strings.TrimSpace(string(actOut)) != "active" && len(strings.TrimSpace(string(mOut))) == 0 {
+				break
+			}
+			time.Sleep(1 * time.Second)
+		}
 
 		// 2. Safety backup of current rootfs
 		if req.SafetyBackup {
-			if err := exec.Command("btrfs", "subvolume", "show", cfg.Rootfs).Run(); err == nil {
+			if execRunTimeout(defaultProbeTimeout, "btrfs", "subvolume", "show", cfg.Rootfs) == nil {
+				_ = os.MkdirAll(cfg.SnapshotDir, 0755)
 				safetyName := fmt.Sprintf("%s-before-rollback-%s", cfg.Machine, time.Now().Format("20060102-150405"))
 				safetyPath := filepath.Join(cfg.SnapshotDir, safetyName)
 				logFn("2. 创建回滚前只读保险快照: " + safetyPath)
@@ -203,11 +244,13 @@ func (m *Manager) StartRollbackTask(machine string, req RollbackRequest) (*TaskR
 			}
 		}
 
-		// 3. Delete current rootfs
-		if err := exec.Command("btrfs", "subvolume", "show", cfg.Rootfs).Run(); err == nil {
-			logFn("3. 删除当前 rootfs: " + cfg.Rootfs)
-			if err := runCmdLogged(logFn, "btrfs", "subvolume", "delete", cfg.Rootfs); err != nil {
-				taskErr = fmt.Errorf("删除当前 rootfs 失败: %v", err)
+		// 3. Stage current rootfs aside before creating replacement so failure can roll back cleanly
+		var stagedOldRootfs string
+		if _, stErr := os.Stat(cfg.Rootfs); stErr == nil {
+			stagedOldRootfs = fmt.Sprintf("%s.rollback-old-%d", cfg.Rootfs, time.Now().UnixNano())
+			logFn("3. 暂存旧 rootfs 并从快照克隆新可写子卷...")
+			if err := os.Rename(cfg.Rootfs, stagedOldRootfs); err != nil {
+				taskErr = fmt.Errorf("暂存当前 rootfs 失败: %v", err)
 				return
 			}
 		}
@@ -215,8 +258,18 @@ func (m *Manager) StartRollbackTask(machine string, req RollbackRequest) (*TaskR
 		// 4. Clone writable rootfs from snapshot
 		logFn(fmt.Sprintf("4. 从快照恢复可写 rootfs: %s -> %s", snapPath, cfg.Rootfs))
 		if err := runCmdLogged(logFn, "btrfs", "subvolume", "snapshot", snapPath, cfg.Rootfs); err != nil {
+			if stagedOldRootfs != "" {
+				_ = os.Rename(stagedOldRootfs, cfg.Rootfs)
+				logFn("[WARN] 恢复快照失败，已自动还原原 rootfs 目录")
+			}
 			taskErr = fmt.Errorf("恢复快照失败: %v", err)
 			return
+		}
+
+		if stagedOldRootfs != "" {
+			if err := runCmdLogged(logFn, "btrfs", "subvolume", "delete", stagedOldRootfs); err != nil {
+				_ = os.RemoveAll(stagedOldRootfs)
+			}
 		}
 
 		// 5. Start container
@@ -407,6 +460,13 @@ func (m *Manager) exportImageSync(logFn func(string), info *ContainerInfo, req E
 	} else {
 		logFn("[OK] 镜像已导出: " + outPath)
 	}
+	if stoppedForExport {
+		stoppedForExport = false
+		logFn("3. 重新启动容器服务 " + cfg.ServiceName)
+		if err := runCmdLogged(logFn, "systemctl", "start", cfg.ServiceName); err != nil {
+			return outPath, fmt.Errorf("镜像已导出 (%s)，但重新启动容器失败: %v", filepath.Base(outPath), err)
+		}
+	}
 	return outPath, nil
 }
 
@@ -419,8 +479,14 @@ func (m *Manager) StartExportImageTask(machine string, req ExportImageRequest) (
 		return nil, err
 	}
 
+	releaseOp, err := m.acquireContainerOp("export-image", machine)
+	if err != nil {
+		return nil, err
+	}
+
 	task := m.tasks.Create("export-image", machine)
 	go func() {
+		defer releaseOp()
 		logFn := func(msg string) {
 			m.tasks.AppendLog(task.ID, msg)
 		}
@@ -432,6 +498,15 @@ func (m *Manager) StartExportImageTask(machine string, req ExportImageRequest) (
 }
 
 func (m *Manager) DeleteImage(machine string, filename string) error {
+	releaseOp, err := m.acquireContainerOp("delete-image", machine)
+	if err != nil {
+		return err
+	}
+	defer releaseOp()
+	return m.deleteImageUnlocked(machine, filename)
+}
+
+func (m *Manager) deleteImageUnlocked(machine string, filename string) error {
 	info, err := m.GetContainer(machine)
 	if err != nil {
 		return err

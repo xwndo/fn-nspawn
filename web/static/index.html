@@ -427,7 +427,7 @@
             <input type="text" id="newMachine" required placeholder="如 dev-debian（≤12字符）" maxlength="12" />
           </div>
           <div class="form-field">
-            <label>容器普通 sudo 用户名 *</label>
+            <label id="newUserLabel">容器普通 sudo 用户名 *</label>
             <input type="text" id="newUser" value="admin" required />
           </div>
           <div class="form-field">
@@ -902,6 +902,13 @@
               <option value="light">浅色</option>
             </select>
           </div>
+          <div class="form-field form-field-span-2">
+            <div class="bind-header" style="margin-bottom:2px;">
+              <span>在线系统镜像本地缓存 (<code>.image-cache/</code>)</span>
+              <button type="button" class="btn btn-sm btn-ghost" id="btnClearImageCache">清理镜像缓存</button>
+            </div>
+            <div class="muted" id="setImageCacheInfo">正在统计本地缓存占用...</div>
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-ghost" data-close="settingsModal">取消</button>
@@ -924,7 +931,7 @@
           <div style="min-width:0;flex:1;">
             <div class="row-gap" style="flex-wrap:wrap;">
               <strong style="font-size:16px;">nspawn容器</strong>
-              <span class="pill pill-ok" id="aboutVersion">v1.4.2</span>
+              <span class="pill pill-ok" id="aboutVersion">v1.4.3</span>
             </div>
             <div class="muted" style="margin-top:2px;">飞牛 fnOS 原生 systemd-nspawn + OVS + Btrfs 系统容器可视化管理器</div>
           </div>

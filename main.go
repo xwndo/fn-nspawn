@@ -62,6 +62,13 @@ func main() {
 	}
 
 	if *listenAddr != "" {
+		if *devMode {
+			if host, _, err := net.SplitHostPort(*listenAddr); err == nil && host != "127.0.0.1" && host != "::1" && host != "localhost" {
+				log.Printf("[WARN] 当前处于 --dev 模式且监听非回环地址 (%s)，无管理员鉴权保护，切勿暴露于公网或不可信局域网！", *listenAddr)
+			}
+		} else {
+			log.Printf("[WARN] 当前未开启 --dev，TCP 监听 (%s) 将拒绝所有业务请求（生产模式仅信任 Unix Socket 网关连接）", *listenAddr)
+		}
 		tcpLn, err := net.Listen("tcp", *listenAddr)
 		if err != nil {
 			log.Fatalf("监听 TCP 失败 (%s): %v", *listenAddr, err)
@@ -77,6 +84,7 @@ func main() {
 	httpServer := &http.Server{
 		Handler:           srv,
 		ReadHeaderTimeout: 15 * time.Second,
+		ConnContext:       server.ConnContext,
 	}
 
 	errCh := make(chan error, len(listeners))

@@ -333,6 +333,9 @@ func SpecToConfig(spec ContainerSpec, containerDir string, systemdLinkPath strin
 	}
 
 	cfg.LinkHealthy = isSystemdUnitSynced(systemdLinkPath, svcPath)
+	if cfg.InitMode == "" && cfg.Rootfs != "" && isOpenWrtRootfs(cfg.Rootfs, cfg.Distro) {
+		cfg.InitMode = InitModeOpenWrt
+	}
 
 	if _, err := os.Stat(filepath.Join(confDir, "network-up.sh")); err == nil {
 		cfg.HasNetUp = true

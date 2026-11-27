@@ -946,3 +946,273 @@ func TestContainerSpecBackupRoundTrip(t *testing.T) {
 		t.Fatalf("expected ConfigToSpec to preserve existing spec.Backup")
 	}
 }
+
+func TestMigrateOpenWrtAndHostnameSync(t *testing.T) {
+	tmp := t.TempDir()
+
+	// 1. OpenWrt rootfs migration identity & network preservation
+	owRootfs := filepath.Join(tmp, "ow-rootfs")
+	if err := os.MkdirAll(filepath.Join(owRootfs, "etc/config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owRootfs, "etc/openwrt_release"), []byte("DISTRIB_ID='OpenWrt'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owRootfs, "etc/config/system"), []byte("config system\n\toption hostname 'old-ow'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(owRootfs, "etc/config/dhcp"), []byte("config dhcp 'lan'\n\toption interface 'lan'\n\toption ignore '0'\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	initMode, enableTun, distro, user := updateMigratedContainerIdentityAndNet(owRootfs, "old-ow", "new-ow", ContainerConfig{
+		Machine: "old-ow",
+		Layout:  LayoutExternal,
+	})
+	if initMode != InitModeOpenWrt || !enableTun || distro != "openwrt" || user != "root" {
+		t.Fatalf("unexpected OpenWrt migration metadata: mode=%q tun=%v distro=%q user=%q", initMode, enableTun, distro, user)
+	}
+	if _, err := os.Stat(filepath.Join(owRootfs, "etc/systemd/network/20-host0.network")); err == nil {
+		t.Fatalf("OpenWrt migration should not write systemd-networkd config")
+	}
+	sysCfg, _ := os.ReadFile(filepath.Join(owRootfs, "etc/config/system"))
+	if !strings.Contains(string(sysCfg), "option hostname 'new-ow'") {
+		t.Fatalf("expected UCI hostname updated to new-ow, got:\n%s", string(sysCfg))
+	}
+	dhcpCfg, _ := os.ReadFile(filepath.Join(owRootfs, "etc/config/dhcp"))
+	if !strings.Contains(string(dhcpCfg), "option ignore '1'") {
+		t.Fatalf("expected LAN DHCP ignore '1', got:\n%s", string(dhcpCfg))
+	}
+
+	// 2. Standard Debian rootfs rename updates both /etc/hostname and /etc/hosts
+	debRootfs := filepath.Join(tmp, "deb-rootfs")
+	if err := os.MkdirAll(filepath.Join(debRootfs, "etc"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(debRootfs, "etc/hosts"), []byte("127.0.0.1 localhost\n127.0.1.1 old-deb\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	debMode, debTun, _, _ := updateMigratedContainerIdentityAndNet(debRootfs, "old-deb", "new-deb", ContainerConfig{
+		Machine: "old-deb",
+		Distro:  "debian",
+	})
+	if debMode != "" || debTun {
+		t.Fatalf("expected systemd defaults for Debian rootfs, got mode=%q tun=%v", debMode, debTun)
+	}
+	hostsBytes, _ := os.ReadFile(filepath.Join(debRootfs, "etc/hosts"))
+	if !strings.Contains(string(hostsBytes), "127.0.1.1 new-deb") {
+		t.Fatalf("expected /etc/hosts updated to new-deb, got:\n%s", string(hostsBytes))
+	}
+}
+
+func TestLegacyContainerBackupPersistenceAndRefresh(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := config.NewStore(filepath.Join(tmp, "etc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseRoot := filepath.Join(tmp, "legacy-pool")
+	if err := store.Save(config.AppConfig{
+		StandardBaseRoot: filepath.Join(tmp, "std-pool"),
+		BaseRoots:        []string{baseRoot},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	legacyConf := filepath.Join(baseRoot, "oldbox-conf")
+	legacyRootfs := filepath.Join(baseRoot, "oldbox", "rootfs")
+	if err := os.MkdirAll(legacyConf, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(legacyRootfs, 0755); err != nil {
+		t.Fatal(err)
+	}
+	unit := RenderServiceUnit(ContainerConfig{
+		Machine:     "oldbox",
+		Rootfs:      legacyRootfs,
+		ConfDir:     legacyConf,
+		ServiceName: "nspawn-oldbox.service",
+	})
+	if err := os.WriteFile(filepath.Join(legacyConf, "nspawn-oldbox.service"), []byte(unit), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr := NewManager(store, NewTaskManager())
+	res, err := mgr.SaveContainerBackup("oldbox", SpecBackup{
+		Snapshot: &SnapshotScheduleSpec{
+			Enabled:   true,
+			Cron:      "0 2 * * *",
+			Tag:       "nightly",
+			ReadOnly:  true,
+			KeepCount: 5,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveContainerBackup on legacy container failed: %v", err)
+	}
+	if res.Backup.Snapshot == nil || !res.Backup.Snapshot.Enabled || res.Backup.Snapshot.Tag != "nightly" {
+		t.Fatalf("expected legacy backup schedule to remain enabled after save, got %+v", res.Backup.Snapshot)
+	}
+
+	// Verify DiscoverContainers does NOT wipe legacy schedule
+	if _, err := mgr.DiscoverContainers(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := mgr.GetContainerBackup("oldbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Backup.Snapshot == nil || !reloaded.Backup.Snapshot.Enabled {
+		t.Fatalf("expected legacy schedule to survive DiscoverContainers, got %+v", reloaded.Backup.Snapshot)
+	}
+
+	// Verify fresh Manager.RefreshBackupSchedules picks up *-conf/container.json
+	mgr2 := NewManager(store, NewTaskManager())
+	mgr2.RefreshBackupSchedules()
+	mgr2.schedMu.Lock()
+	_, ok := mgr2.schedRules["oldbox"]
+	mgr2.schedMu.Unlock()
+	if !ok {
+		t.Fatalf("expected RefreshBackupSchedules to load legacy container schedule")
+	}
+}
+
+func TestParseServiceFileRespectsContainerJSONSourceOfTruth(t *testing.T) {
+	tmp := t.TempDir()
+	paths := BuildStandardPaths(filepath.Join(tmp, "nspawn"), "truthbox")
+	for _, d := range []string{paths.Rootfs, paths.ConfDir, paths.SnapshotDir, paths.ExportsDir} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Write stale .service and stale network-up.sh
+	staleCfg := ContainerConfig{
+		Machine:     "truthbox",
+		Rootfs:      paths.Rootfs,
+		ConfDir:     paths.ConfDir,
+		ServiceName: paths.ServiceName,
+		ServicePath: paths.ServicePath,
+		PhysicalNIC: "eth0",
+		TmpSize:     "1G",
+		MemoryMax:   "2G",
+	}
+	if err := os.WriteFile(paths.ServicePath, []byte(RenderServiceUnit(staleCfg)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(paths.ConfDir, "network-up.sh"), []byte(RenderNetworkUpScript("eth0", "ve-truthbox")), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write updated container.json (Single Source of Truth)
+	spec := ContainerSpec{
+		Machine: "truthbox",
+		System: SpecSystem{
+			ServiceName: paths.ServiceName,
+			Autostart:   true,
+		},
+		Network: SpecNetwork{
+			PhysicalNIC: "enp5s0",
+			Veth:        "ve-truthbox",
+		},
+		Resources: SpecResources{
+			TmpSize:   "8G",
+			MemoryMax: "16G",
+			CPUQuota:  "400%",
+		},
+		BindMounts: []BindMount{
+			{HostPath: "/vol1/media", ContainerPath: "/media", ReadOnly: true},
+		},
+	}
+	if err := WriteContainerSpec(paths.ConfigFile, spec); err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := ParseServiceFile(paths.ServicePath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.PhysicalNIC != "enp5s0" || parsed.TmpSize != "8G" || parsed.MemoryMax != "16G" || parsed.CPUQuota != "400%" {
+		t.Fatalf("expected container.json fields to take precedence, got %+v", parsed)
+	}
+	if len(parsed.BindMounts) != 1 || parsed.BindMounts[0].HostPath != "/vol1/media" {
+		t.Fatalf("expected BindMounts from container.json, got %+v", parsed.BindMounts)
+	}
+}
+
+func TestInputValidatorsAndContainerOpMutex(t *testing.T) {
+	if err := validateTmpSize("4G"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := validateTmpSize("4G\nExecStart=/bin/evil"); err == nil {
+		t.Fatalf("expected newline in TmpSize to fail")
+	}
+	if err := validateMemoryMax("8G\nExecStartPost=/bin/sh"); err == nil {
+		t.Fatalf("expected newline in MemoryMax to fail")
+	}
+	if err := validateCPUQuota("200%"); err != nil {
+		t.Fatalf("expected 200%% CPUQuota to pass: %v", err)
+	}
+	if err := validateCPUQuota("200"); err == nil {
+		t.Fatalf("expected CPUQuota without %% to fail")
+	}
+	if err := validatePhysicalNIC("enp2s0;id"); err == nil {
+		t.Fatalf("expected shell chars in NIC to fail")
+	}
+	if err := validateSuite("../sid"); err == nil {
+		t.Fatalf("expected path traversal suite to fail")
+	}
+	if err := validateMirrorURL("https://mirrors.ustc.edu.cn/debian"); err != nil {
+		t.Fatalf("expected valid mirror URL to pass: %v", err)
+	}
+	if err := validateMirrorURL("https://evil.example/debian main\ndeb http://x"); err == nil {
+		t.Fatalf("expected whitespace/newline in mirror URL to fail")
+	}
+	if err := validatePassword("secret\nroot:hacked"); err == nil {
+		t.Fatalf("expected newline in password to fail")
+	}
+
+	tmp := t.TempDir()
+	if _, err := validateBindMounts([]BindMount{{HostPath: tmp, ContainerPath: "/mnt/a:b"}}); err == nil {
+		t.Fatalf("expected colon in ContainerPath to fail")
+	}
+	if binds, err := validateBindMounts([]BindMount{{HostPath: tmp, ContainerPath: "/mnt/data", ReadOnly: true}}); err != nil || len(binds) != 1 {
+		t.Fatalf("expected valid BindMount to pass, got %v", err)
+	}
+
+	// RenderServiceUnit strips unexpected newlines defensively
+	unit := RenderServiceUnit(ContainerConfig{
+		Machine:   "box",
+		Rootfs:    "/vol1/nspawn/box/rootfs",
+		ConfDir:   "/vol1/nspawn/box/config",
+		MemoryMax: "4G\nExecStartPost=/bin/evil",
+	})
+	if strings.Contains(unit, "\nExecStartPost=/bin/evil") {
+		t.Fatalf("newline directive leaked into unit:\n%s", unit)
+	}
+
+	// Per-container mutex prevents concurrent operations on same container
+	store, err := config.NewStore(filepath.Join(tmp, "etc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr := NewManager(store, NewTaskManager())
+	rel1, err := mgr.acquireContainerOp("rollback", "devbox")
+	if err != nil {
+		t.Fatalf("first acquire failed: %v", err)
+	}
+	if _, err := mgr.acquireContainerOp("export-image", "devbox"); err == nil {
+		t.Fatalf("expected second concurrent acquire on devbox to fail")
+	}
+	if relOther, err := mgr.acquireContainerOp("export-image", "otherbox"); err != nil {
+		t.Fatalf("different container should not block: %v", err)
+	} else {
+		relOther()
+	}
+	rel1()
+	if rel2, err := mgr.acquireContainerOp("export-image", "devbox"); err != nil {
+		t.Fatalf("acquire after release should succeed: %v", err)
+	} else {
+		rel2()
+	}
+}

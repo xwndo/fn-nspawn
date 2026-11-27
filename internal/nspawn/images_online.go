@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -47,6 +48,18 @@ type OnlineImageCatalog struct {
 	FetchedAt string              `json:"fetched_at"`
 	Sources   []OnlineImageSource `json:"sources"`
 	Images    []OnlineImageItem   `json:"images"`
+}
+
+type OnlineImageCacheStats struct {
+	CacheDir   string `json:"cache_dir"`
+	FileCount  int    `json:"file_count"`
+	TotalBytes int64  `json:"total_bytes"`
+}
+
+type OnlineImageCacheClearResult struct {
+	CacheDir     string `json:"cache_dir"`
+	RemovedFiles int    `json:"removed_files"`
+	FreedBytes   int64  `json:"freed_bytes"`
 }
 
 type onlineCatalogCacheEntry struct {
@@ -501,6 +514,79 @@ func (m *Manager) ListOnlineImageCatalog(sourceID, arch string, forceRefresh boo
 	}, nil
 }
 
+func (m *Manager) lockImageDownload(destPath string) func() {
+	m.downloadMu.Lock()
+	if m.downloadLocks == nil {
+		m.downloadLocks = make(map[string]*sync.Mutex)
+	}
+	dlMu, ok := m.downloadLocks[destPath]
+	if !ok {
+		dlMu = &sync.Mutex{}
+		m.downloadLocks[destPath] = dlMu
+	}
+	m.downloadMu.Unlock()
+
+	dlMu.Lock()
+	return func() {
+		dlMu.Unlock()
+	}
+}
+
+func (m *Manager) InspectOnlineImageCache() OnlineImageCacheStats {
+	cleanRoot := filepath.Clean(strings.TrimSpace(m.cfgStore.Get().StandardBaseRoot))
+	if cleanRoot == "" || cleanRoot == "." {
+		cleanRoot = "/vol1/nspawn"
+	}
+	cacheDir := filepath.Join(cleanRoot, ".image-cache")
+	stats := OnlineImageCacheStats{CacheDir: cacheDir}
+	_ = filepath.WalkDir(cacheDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, ".download-") || strings.HasSuffix(name, ".tmp") {
+			return nil
+		}
+		if fi, iErr := d.Info(); iErr == nil {
+			stats.FileCount++
+			stats.TotalBytes += fi.Size()
+		}
+		return nil
+	})
+	return stats
+}
+
+func (m *Manager) ClearOnlineImageCache() (OnlineImageCacheClearResult, error) {
+	cleanRoot := filepath.Clean(strings.TrimSpace(m.cfgStore.Get().StandardBaseRoot))
+	if cleanRoot == "" || cleanRoot == "." {
+		cleanRoot = "/vol1/nspawn"
+	}
+	cacheDir := filepath.Join(cleanRoot, ".image-cache")
+	res := OnlineImageCacheClearResult{CacheDir: cacheDir}
+	if _, err := os.Stat(cacheDir); os.IsNotExist(err) {
+		return res, nil
+	}
+	err := filepath.WalkDir(cacheDir, func(path string, d os.DirEntry, wErr error) error {
+		if wErr != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasPrefix(name, ".download-") || strings.HasSuffix(name, ".tmp") {
+			return nil
+		}
+		var size int64
+		if fi, iErr := d.Info(); iErr == nil {
+			size = fi.Size()
+		}
+		if rErr := os.Remove(path); rErr == nil {
+			res.RemovedFiles++
+			res.FreedBytes += size
+		}
+		return nil
+	})
+	return res, err
+}
+
 func (m *Manager) DownloadOnlineImage(logFn func(string), rawURL, sourceID, filename, expectedSHA256, baseRoot string) (string, error) {
 	if !IsAllowedOnlineImageURL(rawURL) {
 		return "", fmt.Errorf("非法的在线镜像下载地址（仅允许内置可信镜像源 HTTPS 地址）")
@@ -512,6 +598,9 @@ func (m *Manager) DownloadOnlineImage(logFn func(string), rawURL, sourceID, file
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return "", err
 	}
+
+	unlock := m.lockImageDownload(destPath)
+	defer unlock()
 
 	expectedSHA256 = strings.ToLower(strings.TrimSpace(expectedSHA256))
 	if st, err := os.Stat(destPath); err == nil && !st.IsDir() && st.Size() > 0 {
@@ -544,12 +633,11 @@ func (m *Manager) DownloadOnlineImage(logFn func(string), rawURL, sourceID, file
 		return "", fmt.Errorf("下载镜像返回 HTTP %d", resp.StatusCode)
 	}
 
-	tmpPath := destPath + ".tmp"
-	_ = os.Remove(tmpPath)
-	outFile, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	outFile, err := os.CreateTemp(filepath.Dir(destPath), ".download-*")
 	if err != nil {
 		return "", err
 	}
+	tmpPath := outFile.Name()
 	cleanupTmp := true
 	defer func() {
 		_ = outFile.Close()
@@ -598,12 +686,19 @@ func (m *Manager) DownloadOnlineImage(logFn func(string), rawURL, sourceID, file
 	if err := outFile.Close(); err != nil {
 		return "", err
 	}
+	if total > 0 && downloaded != total {
+		return "", fmt.Errorf("镜像下载字节数不完整: 已接收 %d / 预期 %d", downloaded, total)
+	}
+	if downloaded == 0 {
+		return "", fmt.Errorf("下载到的镜像文件为空")
+	}
 
 	gotSHA256 := hex.EncodeToString(hasher.Sum(nil))
 	if expectedSHA256 != "" && gotSHA256 != expectedSHA256 {
 		return "", fmt.Errorf("镜像 SHA256 校验失败: got %s, want %s", gotSHA256, expectedSHA256)
 	}
 
+	_ = os.Chmod(tmpPath, 0644)
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		return "", err
 	}

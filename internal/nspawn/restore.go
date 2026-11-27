@@ -18,8 +18,14 @@ func (m *Manager) StartRestoreTask(machine string) (*TaskRecord, error) {
 		return nil, fmt.Errorf("外部容器不支持直接修复，请使用“迁移为标准容器”生成标准配置目录")
 	}
 
+	releaseOp, err := m.acquireContainerOp("restore", machine)
+	if err != nil {
+		return nil, err
+	}
+
 	task := m.tasks.Create("restore", machine)
 	go func() {
+		defer releaseOp()
 		var taskErr error
 		defer func() {
 			m.tasks.Finish(task.ID, taskErr)
@@ -272,12 +278,20 @@ func (m *Manager) StartImportTask(req ImportContainerRequest) (*TaskRecord, erro
 	if strings.TrimSpace(spec.Network.PhysicalNIC) == "" {
 		return nil, fmt.Errorf("未检测到已开启 OVS 的物理网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS")
 	}
+	if err := validatePhysicalNIC(spec.Network.PhysicalNIC); err != nil {
+		return nil, err
+	}
 	if err := exec.Command("ip", "link", "show", spec.Network.PhysicalNIC).Run(); err != nil {
 		return nil, fmt.Errorf("找不到物理网卡 %s（重装系统后网卡名如有变化，请在导入弹窗中重新选择）", spec.Network.PhysicalNIC)
 	}
 	brOut, err := exec.Command("ovs-vsctl", "port-to-br", spec.Network.PhysicalNIC).Output()
 	if err != nil || strings.TrimSpace(string(brOut)) == "" {
 		return nil, fmt.Errorf("物理网卡 %s 当前未加入任何 OVS Bridge，请先在 fnOS 网络设置启用 OVS", spec.Network.PhysicalNIC)
+	}
+
+	releaseOp, err := m.acquireContainerOp("import", spec.Machine)
+	if err != nil {
+		return nil, err
 	}
 
 	applyAutostart := true
@@ -287,6 +301,7 @@ func (m *Manager) StartImportTask(req ImportContainerRequest) (*TaskRecord, erro
 
 	task := m.tasks.Create("import-restore", spec.Machine)
 	go func() {
+		defer releaseOp()
 		var taskErr error
 		defer func() {
 			m.tasks.Finish(task.ID, taskErr)

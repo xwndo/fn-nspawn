@@ -1,7 +1,12 @@
 package server
 
 import (
+	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"io/fs"
+	"net"
 	"net/http"
 	"strings"
 
@@ -11,11 +16,47 @@ import (
 
 const GatewayPrefix = "/app/fn-nspawn"
 
+type ctxKey int
+
+const (
+	ctxKeyConnTransport ctxKey = iota
+	ctxKeyUnixPeerOK
+)
+
+// ConnContext tags incoming HTTP connections with their transport ("unix" or "tcp")
+// and kernel-verified SO_PEERCRED authorization state on Linux Unix sockets.
+func ConnContext(ctx context.Context, c net.Conn) context.Context {
+	switch conn := c.(type) {
+	case *net.UnixConn:
+		ctx = context.WithValue(ctx, ctxKeyConnTransport, "unix")
+		ctx = context.WithValue(ctx, ctxKeyUnixPeerOK, inspectUnixPeerAllowed(conn))
+	case *net.TCPConn:
+		ctx = context.WithValue(ctx, ctxKeyConnTransport, "tcp")
+	}
+	return ctx
+}
+
+// WithTransportForTest allows unit tests to simulate transport context metadata.
+func WithTransportForTest(ctx context.Context, transport string, unixPeerOK bool) context.Context {
+	ctx = context.WithValue(ctx, ctxKeyConnTransport, transport)
+	ctx = context.WithValue(ctx, ctxKeyUnixPeerOK, unixPeerOK)
+	return ctx
+}
+
+func generateWSToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "fn-nspawn-fallback-ws-token"
+	}
+	return hex.EncodeToString(b)
+}
+
 type Server struct {
 	cfgStore *config.Store
 	mgr      *nspawn.Manager
 	staticFS fs.FS
 	devMode  bool
+	wsToken  string
 	mux      *http.ServeMux
 }
 
@@ -25,10 +66,23 @@ func New(cfgStore *config.Store, mgr *nspawn.Manager, staticFS fs.FS, devMode bo
 		mgr:      mgr,
 		staticFS: staticFS,
 		devMode:  devMode,
+		wsToken:  generateWSToken(),
 		mux:      http.NewServeMux(),
 	}
 	s.registerRoutes()
 	return s
+}
+
+func (s *Server) WSToken() string {
+	return s.wsToken
+}
+
+func (s *Server) verifyWSToken(token string) bool {
+	t := strings.TrimSpace(token)
+	if t == "" || len(t) != len(s.wsToken) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(t), []byte(s.wsToken)) == 1
 }
 
 func (s *Server) registerRoutes() {
@@ -37,6 +91,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("/api/host", s.handleHost)
 	s.mux.HandleFunc("/api/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/images/online", s.handleOnlineImages)
+	s.mux.HandleFunc("/api/images/cache", s.handleOnlineImageCache)
 	s.mux.HandleFunc("/api/cron/preview", s.handleCronPreview)
 	s.mux.HandleFunc("/api/fs/browse", s.handleFSBrowse)
 	s.mux.HandleFunc("/api/tasks", s.handleTasks)
@@ -50,6 +105,14 @@ func (s *Server) registerRoutes() {
 
 	fileServer := http.FileServer(http.FS(s.staticFS))
 	s.mux.Handle("/", fileServer)
+}
+
+func rejectForbidden(w http.ResponseWriter, r *http.Request, msg string) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": msg})
+		return
+	}
+	http.Error(w, "403 Forbidden: "+msg, http.StatusForbidden)
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -79,16 +142,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Gateway admin authentication in production mode
 	if !s.devMode {
+		transport, _ := r.Context().Value(ctxKeyConnTransport).(string)
+		if transport == "tcp" {
+			rejectForbidden(w, r, "生产模式下禁止通过 TCP 直接访问，请通过飞牛网关访问或使用 --dev 本地调试")
+			return
+		}
+		if transport == "unix" {
+			if peerOK, ok := r.Context().Value(ctxKeyUnixPeerOK).(bool); ok && !peerOK {
+				rejectForbidden(w, r, "拒绝非系统网关进程访问 Unix Socket")
+				return
+			}
+		}
+
 		uid := r.Header.Get("X-Trim-Userid")
 		isAdmin := r.Header.Get("X-Trim-Isadmin")
 		if uid == "" || isAdmin != "true" {
-			if strings.HasPrefix(r.URL.Path, "/api/") {
-				writeJSON(w, http.StatusForbidden, map[string]string{
-					"error": "需要飞牛 NAS 管理员权限才能管理系统容器",
-				})
-				return
-			}
-			http.Error(w, "403 Forbidden: 需要飞牛 NAS 管理员权限", http.StatusForbidden)
+			rejectForbidden(w, r, "需要飞牛 NAS 管理员权限才能管理系统容器")
 			return
 		}
 	}

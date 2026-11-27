@@ -2,8 +2,11 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -35,6 +38,14 @@ func DefaultAppConfig() AppConfig {
 	}
 }
 
+func sanitizeSingleLine(s string) string {
+	return strings.TrimSpace(strings.NewReplacer("\r", "", "\n", "", "\x00", "").Replace(s))
+}
+
+func isAbsHostPath(p string) bool {
+	return filepath.IsAbs(p) || strings.HasPrefix(p, "/") || strings.HasPrefix(p, `\`)
+}
+
 func NewStore(etcDir string) (*Store, error) {
 	if etcDir == "" {
 		etcDir = "./data"
@@ -49,12 +60,17 @@ func NewStore(etcDir string) (*Store, error) {
 	}
 	if data, err := os.ReadFile(fp); err == nil {
 		var loaded AppConfig
-		if err := json.Unmarshal(data, &loaded); err == nil {
+		if uErr := json.Unmarshal(data, &loaded); uErr == nil {
 			s.cfg = mergeDefaults(loaded)
+		} else {
+			bak := fp + ".corrupt"
+			_ = os.WriteFile(bak, data, 0600)
+			log.Printf("[WARN] 解析配置文件 %s 失败 (%v)，已备份至 %s 并回退默认配置", fp, uErr, bak)
+			_ = s.Save(s.cfg)
 		}
 	} else {
 		// Initialize defaults from wizard env if present
-		if base := os.Getenv("wizard_base_root"); base != "" {
+		if base := sanitizeSingleLine(os.Getenv("wizard_base_root")); base != "" {
 			clean := filepath.Clean(base)
 			s.cfg.StandardBaseRoot = clean
 			s.cfg.BaseRoots = []string{clean}
@@ -66,16 +82,23 @@ func NewStore(etcDir string) (*Store, error) {
 
 func mergeDefaults(c AppConfig) AppConfig {
 	def := DefaultAppConfig()
+	c.StandardBaseRoot = sanitizeSingleLine(c.StandardBaseRoot)
+	c.DefaultPhysicalNIC = sanitizeSingleLine(c.DefaultPhysicalNIC)
+	c.DefaultMirror = sanitizeSingleLine(c.DefaultMirror)
+	c.DefaultSecurityMirror = sanitizeSingleLine(c.DefaultSecurityMirror)
+	c.DefaultSuite = sanitizeSingleLine(c.DefaultSuite)
+	c.DefaultTmpSize = sanitizeSingleLine(c.DefaultTmpSize)
+
 	if c.StandardBaseRoot == "" || c.StandardBaseRoot == "." {
 		for _, r := range c.BaseRoots {
-			clean := filepath.Clean(r)
+			clean := filepath.Clean(sanitizeSingleLine(r))
 			if filepath.Base(clean) == "nspawn-std" {
 				c.StandardBaseRoot = clean
 				break
 			}
 		}
 		if (c.StandardBaseRoot == "" || c.StandardBaseRoot == ".") && len(c.BaseRoots) > 0 {
-			clean := filepath.Clean(c.BaseRoots[0])
+			clean := filepath.Clean(sanitizeSingleLine(c.BaseRoots[0]))
 			if clean != "" && clean != "." {
 				c.StandardBaseRoot = clean
 			}
@@ -113,13 +136,27 @@ func (s *Store) Save(next AppConfig) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if strings.ContainsAny(next.StandardBaseRoot, "\r\n\x00") {
+		return fmt.Errorf("标准容器根目录包含非法控制字符")
+	}
 	next = mergeDefaults(next)
+	if next.StandardBaseRoot != "" && !isAbsHostPath(next.StandardBaseRoot) {
+		return fmt.Errorf("标准容器根目录必须是绝对路径: %s", next.StandardBaseRoot)
+	}
+
 	seen := make(map[string]bool)
 	cleanRoots := make([]string, 0, len(next.BaseRoots))
 	for _, r := range next.BaseRoots {
-		c := filepath.Clean(r)
+		trimmed := sanitizeSingleLine(r)
+		if trimmed == "" {
+			continue
+		}
+		c := filepath.Clean(trimmed)
 		if c == "." || c == "" || seen[c] {
 			continue
+		}
+		if !isAbsHostPath(c) {
+			return fmt.Errorf("补充扫描目录必须是绝对路径: %s", r)
 		}
 		seen[c] = true
 		cleanRoots = append(cleanRoots, c)
@@ -143,7 +180,10 @@ func (s *Store) Save(next AppConfig) error {
 
 func (s *Store) AddBaseRoot(root string) error {
 	cfg := s.Get()
-	c := filepath.Clean(root)
+	c := filepath.Clean(sanitizeSingleLine(root))
+	if c == "" || c == "." || !isAbsHostPath(c) {
+		return nil
+	}
 	for _, existing := range cfg.BaseRoots {
 		if existing == c {
 			return nil

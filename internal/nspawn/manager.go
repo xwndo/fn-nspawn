@@ -3,7 +3,6 @@ package nspawn
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -22,7 +21,7 @@ import (
 )
 
 var (
-	AppVersion    = "1.4.2"
+	AppVersion    = "1.4.3"
 	reMachineName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 	reUserName    = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 )
@@ -30,6 +29,10 @@ var (
 type Manager struct {
 	cfgStore           *config.Store
 	tasks              *TaskManager
+	opMu               sync.Mutex
+	activeOps          map[string]string
+	downloadMu         sync.Mutex
+	downloadLocks      map[string]*sync.Mutex
 	onlineCatalogMu    sync.Mutex
 	onlineCatalogCache map[string]onlineCatalogCacheEntry
 	schedMu            sync.Mutex
@@ -43,6 +46,8 @@ func NewManager(cfgStore *config.Store, tasks *TaskManager) *Manager {
 	return &Manager{
 		cfgStore:           cfgStore,
 		tasks:              tasks,
+		activeOps:          make(map[string]string),
+		downloadLocks:      make(map[string]*sync.Mutex),
 		onlineCatalogCache: make(map[string]onlineCatalogCacheEntry),
 		schedRules:         make(map[string]SpecBackup),
 		schedStatus:        make(map[string]ScheduleRunStatus),
@@ -207,7 +212,7 @@ func (m *Manager) inspectExternalMachinectlContainer(machine string, defaultNIC 
 	}
 
 	machinectlBin := lookBinary("machinectl", "/usr/bin/machinectl", "/bin/machinectl")
-	if out, err := exec.Command(machinectlBin, "show", machine, "--property=Name,RootDirectory,Unit,Service,Leader,State", "--no-pager").Output(); err == nil {
+	if out, err := execOutputTimeout(defaultProbeTimeout, machinectlBin, "show", machine, "--property=Name,RootDirectory,Unit,Service,Leader,State", "--no-pager"); err == nil {
 		props := parseKeyValues(string(out))
 		if u := strings.TrimSpace(props["Unit"]); u != "" {
 			cfg.ServiceName = u
@@ -225,7 +230,7 @@ func (m *Manager) inspectExternalMachinectlContainer(machine string, defaultNIC 
 	}
 
 	if strings.HasSuffix(cfg.ServiceName, ".service") {
-		if unitOut, err := exec.Command("systemctl", "cat", cfg.ServiceName, "--no-pager").Output(); err == nil {
+		if unitOut, err := execOutputTimeout(defaultProbeTimeout, "systemctl", "cat", cfg.ServiceName, "--no-pager"); err == nil {
 			enrichConfigFromUnitText(string(unitOut), &cfg)
 		}
 	}
@@ -233,10 +238,23 @@ func (m *Manager) inspectExternalMachinectlContainer(machine string, defaultNIC 
 	if fileExists(nspawnCfg) {
 		enrichConfigFromNspawnFile(nspawnCfg, &cfg)
 	}
+	if cfg.InitMode == "" && cfg.Rootfs != "" && isOpenWrtRootfs(cfg.Rootfs, cfg.Distro) {
+		cfg.InitMode = InitModeOpenWrt
+		if cfg.Distro == "" {
+			cfg.Distro = "openwrt"
+		}
+	}
 	return cfg
 }
 
-func (m *Manager) DiscoverContainers() ([]ContainerInfo, error) {
+func finalizeContainerConfig(cfg *ContainerConfig, stdRoot string) {
+	if cfg.Layout == LayoutStandard && stdRoot != "" && stdRoot != "." && cfg.BaseRoot != "" {
+		cfg.InStandardRoot = filepath.Clean(cfg.BaseRoot) == stdRoot
+	}
+	cfg.CanMigrateToStandard = cfg.Rootfs != "" && cfg.Rootfs != "/" && !cfg.InStandardRoot
+}
+
+func (m *Manager) discoverLocalConfigs(appCfg config.AppConfig) (map[string]ContainerConfig, map[string]bool) {
 	seenServices := make(map[string]ContainerConfig)
 	seenMachines := make(map[string]bool)
 	recordUnit := func(key string, cfg ContainerConfig) {
@@ -267,12 +285,9 @@ func (m *Manager) DiscoverContainers() ([]ContainerInfo, error) {
 	}
 
 	// 2. Scan StandardBaseRoot first, then configured supplementary BaseRoots.
-	// Standardized containers always take precedence over legacy *-conf/ regardless of order.
-	appCfg := m.cfgStore.Get()
 	scanRoots := effectiveScanRoots(appCfg)
 
-	// 2a. Standardized layout with declarative container.json:
-	// <Root>/<Machine>/config/container.json
+	// 2a. Standardized layout with declarative container.json
 	for _, baseRoot := range scanRoots {
 		specMatches, _ := filepath.Glob(filepath.Join(baseRoot, "*", "config", ContainerSpecFileName))
 		for _, specPath := range specMatches {
@@ -295,8 +310,7 @@ func (m *Manager) DiscoverContainers() ([]ContainerInfo, error) {
 		}
 	}
 
-	// 2b. Standardized layout without container.json:
-	// <Root>/<Machine>/config/nspawn-*.service
+	// 2b. Standardized layout without container.json
 	for _, baseRoot := range scanRoots {
 		stdSvcMatches, _ := filepath.Glob(filepath.Join(baseRoot, "*", "config", "nspawn-*.service"))
 		for _, svcPath := range stdSvcMatches {
@@ -333,19 +347,26 @@ func (m *Manager) DiscoverContainers() ([]ContainerInfo, error) {
 		}
 	}
 
+	return seenServices, seenMachines
+}
+
+func (m *Manager) DiscoverContainers() ([]ContainerInfo, error) {
+	appCfg := m.cfgStore.Get()
+	seenServices, seenMachines := m.discoverLocalConfigs(appCfg)
+
 	// 3. Auto-discover running external systemd-nspawn containers via machinectl
 	machinectlBin := lookBinary("machinectl", "/usr/bin/machinectl", "/bin/machinectl")
-	if mOut, err := exec.Command(machinectlBin, "list", "--no-legend", "--no-pager").Output(); err == nil {
+	if mOut, err := execOutputTimeout(defaultProbeTimeout, machinectlBin, "list", "--no-legend", "--no-pager"); err == nil {
 		for _, extMachine := range parseMachinectlListOutput(string(mOut)) {
 			if seenMachines[extMachine] {
 				continue
 			}
 			extCfg := m.inspectExternalMachinectlContainer(extMachine, appCfg.DefaultPhysicalNIC)
-			recordUnit("ext:"+extMachine, extCfg)
+			seenServices["ext:"+extMachine] = extCfg
+			seenMachines[extMachine] = true
 		}
 	}
 
-	// Sort by service/machine name
 	names := make([]string, 0, len(seenServices))
 	for k := range seenServices {
 		names = append(names, k)
@@ -353,33 +374,67 @@ func (m *Manager) DiscoverContainers() ([]ContainerInfo, error) {
 	sort.Strings(names)
 
 	stdRoot := filepath.Clean(appCfg.StandardBaseRoot)
-	out := make([]ContainerInfo, 0, len(names))
-	for _, k := range names {
+	out := make([]ContainerInfo, len(names))
+	sem := make(chan struct{}, 4)
+	var wg sync.WaitGroup
+	for idx, k := range names {
+		i := idx
 		cfg := seenServices[k]
-		if cfg.Layout == LayoutStandard && stdRoot != "" && stdRoot != "." && cfg.BaseRoot != "" {
-			cfg.InStandardRoot = filepath.Clean(cfg.BaseRoot) == stdRoot
-		}
-		cfg.CanMigrateToStandard = cfg.Rootfs != "" && cfg.Rootfs != "/" && !cfg.InStandardRoot
-		rt := m.inspectRuntime(cfg)
-		out = append(out, ContainerInfo{
-			Config:  cfg,
-			Runtime: rt,
-		})
+		finalizeContainerConfig(&cfg, stdRoot)
+		wg.Add(1)
+		go func(c ContainerConfig) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			rt := m.inspectRuntime(c)
+			out[i] = ContainerInfo{
+				Config:  c,
+				Runtime: rt,
+			}
+		}(cfg)
 	}
+	wg.Wait()
 	m.syncAllSchedulesFromContainers(out)
 	return out, nil
 }
 
 func (m *Manager) GetContainer(machine string) (*ContainerInfo, error) {
-	list, err := m.DiscoverContainers()
-	if err != nil {
-		return nil, err
+	machine = strings.TrimSpace(machine)
+	if machine == "" || !reMachineName.MatchString(machine) {
+		return nil, fmt.Errorf("未找到容器：%s", machine)
 	}
-	for _, item := range list {
-		if item.Config.Machine == machine {
-			return &item, nil
+	appCfg := m.cfgStore.Get()
+	seenServices, _ := m.discoverLocalConfigs(appCfg)
+
+	names := make([]string, 0, len(seenServices))
+	for k := range seenServices {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	stdRoot := filepath.Clean(appCfg.StandardBaseRoot)
+	for _, k := range names {
+		cfg := seenServices[k]
+		if cfg.Machine == machine {
+			finalizeContainerConfig(&cfg, stdRoot)
+			rt := m.inspectRuntime(cfg)
+			return &ContainerInfo{Config: cfg, Runtime: rt}, nil
 		}
 	}
+
+	// Fallback: check if it is a running external systemd-nspawn container
+	machinectlBin := lookBinary("machinectl", "/usr/bin/machinectl", "/bin/machinectl")
+	if mOut, err := execOutputTimeout(defaultProbeTimeout, machinectlBin, "list", "--no-legend", "--no-pager"); err == nil {
+		for _, extMachine := range parseMachinectlListOutput(string(mOut)) {
+			if extMachine == machine {
+				cfg := m.inspectExternalMachinectlContainer(machine, appCfg.DefaultPhysicalNIC)
+				finalizeContainerConfig(&cfg, stdRoot)
+				rt := m.inspectRuntime(cfg)
+				return &ContainerInfo{Config: cfg, Runtime: rt}, nil
+			}
+		}
+	}
+
 	return nil, fmt.Errorf("未找到容器：%s", machine)
 }
 
@@ -395,7 +450,7 @@ func (m *Manager) inspectRuntime(cfg ContainerConfig) ContainerRuntime {
 			rt.RootfsExists = true
 		}
 		if rt.RootfsExists {
-			if err := exec.Command("btrfs", "subvolume", "show", cfg.Rootfs).Run(); err == nil {
+			if err := execRunTimeout(defaultProbeTimeout, "btrfs", "subvolume", "show", cfg.Rootfs); err == nil {
 				rt.RootfsIsBtrfs = true
 			}
 		}
@@ -414,8 +469,8 @@ func (m *Manager) inspectRuntime(cfg ContainerConfig) ContainerRuntime {
 	}
 
 	// systemctl show
-	out, err := exec.Command("systemctl", "show", cfg.ServiceName,
-		"--property=ActiveState,SubState,LoadState,UnitFileState,MainPID,MemoryCurrent,CPUUsageNSec,ExecMainStartTimestamp,ExecMainStartTimestampUSec,ExecMainStartTimestampMonotonic").Output()
+	out, err := execOutputTimeout(defaultProbeTimeout, "systemctl", "show", cfg.ServiceName,
+		"--property=ActiveState,SubState,LoadState,UnitFileState,MainPID,MemoryCurrent,CPUUsageNSec,ExecMainStartTimestamp,ExecMainStartTimestampUSec,ExecMainStartTimestampMonotonic")
 	if err == nil {
 		props := parseKeyValues(string(out))
 		if v := props["ActiveState"]; v != "" {
@@ -463,7 +518,7 @@ func (m *Manager) inspectRuntime(cfg ContainerConfig) ContainerRuntime {
 
 	machinectlBin := lookBinary("machinectl", "/usr/bin/machinectl", "/bin/machinectl")
 	// machinectl show
-	if mOut, err := exec.Command(machinectlBin, "show", cfg.Machine, "--property=Leader,State", "--no-pager").Output(); err == nil {
+	if mOut, err := execOutputTimeout(defaultProbeTimeout, machinectlBin, "show", cfg.Machine, "--property=Leader,State", "--no-pager"); err == nil {
 		mProps := parseKeyValues(string(mOut))
 		if v, err := strconv.Atoi(mProps["Leader"]); err == nil {
 			rt.LeaderPID = v
@@ -483,7 +538,7 @@ func (m *Manager) inspectRuntime(cfg ContainerConfig) ContainerRuntime {
 	// OVS check
 	if ovsPath, err := exec.LookPath("ovs-vsctl"); err == nil {
 		if cfg.Veth != "" {
-			if brOut, err := exec.Command(ovsPath, "port-to-br", cfg.Veth).Output(); err == nil {
+			if brOut, err := execOutputTimeout(defaultProbeTimeout, ovsPath, "port-to-br", cfg.Veth); err == nil {
 				br := strings.TrimSpace(string(brOut))
 				if br != "" {
 					rt.OVSBridge = br
@@ -492,7 +547,7 @@ func (m *Manager) inspectRuntime(cfg ContainerConfig) ContainerRuntime {
 			}
 		}
 		if rt.OVSBridge == "" && cfg.PhysicalNIC != "" {
-			if brOut, err := exec.Command(ovsPath, "port-to-br", cfg.PhysicalNIC).Output(); err == nil {
+			if brOut, err := execOutputTimeout(defaultProbeTimeout, ovsPath, "port-to-br", cfg.PhysicalNIC); err == nil {
 				rt.OVSBridge = strings.TrimSpace(string(brOut))
 			}
 		}
@@ -505,7 +560,7 @@ func (m *Manager) inspectRuntime(cfg ContainerConfig) ContainerRuntime {
 
 	// Fallback: machinectl status Address lines if IPv4 is still empty while running
 	if (rt.ActiveState == "active" || rt.MachinectlUp) && len(rt.IPv4Addrs) == 0 {
-		if stOut, err := exec.Command(machinectlBin, "status", cfg.Machine, "--no-pager").Output(); err == nil {
+		if stOut, err := execOutputTimeout(defaultProbeTimeout, machinectlBin, "status", cfg.Machine, "--no-pager"); err == nil {
 			v4s, v6s := parseMachinectlStatusAddresses(string(stOut))
 			for _, ip := range v4s {
 				rt.IPv4Addrs = appendUnique(rt.IPv4Addrs, ip)
@@ -832,7 +887,7 @@ func fillNetNSInfo(leaderPID int, rt *ContainerRuntime) {
 	nsenterBin := lookBinary("nsenter", "/usr/bin/nsenter", "/bin/nsenter")
 
 	pidStr := strconv.Itoa(leaderPID)
-	if out, err := exec.Command(nsenterBin, "-t", pidStr, "-n", ipBin, "-j", "addr", "show").Output(); err == nil {
+	if out, err := execOutputTimeout(defaultProbeTimeout, nsenterBin, "-t", pidStr, "-n", ipBin, "-j", "addr", "show"); err == nil {
 		mac, v4s, v6s := parseIPAddrJSON(out)
 		if mac != "" {
 			rt.Host0MAC = mac
@@ -842,7 +897,7 @@ func fillNetNSInfo(leaderPID int, rt *ContainerRuntime) {
 	}
 
 	if len(rt.IPv4Addrs) == 0 || rt.Host0MAC == "" {
-		if txtOut, err := exec.Command(nsenterBin, "-t", pidStr, "-n", ipBin, "-o", "addr", "show").Output(); err == nil {
+		if txtOut, err := execOutputTimeout(defaultProbeTimeout, nsenterBin, "-t", pidStr, "-n", ipBin, "-o", "addr", "show"); err == nil {
 			mac, v4s, v6s := parseIPAddrText(string(txtOut))
 			if rt.Host0MAC == "" && mac != "" {
 				rt.Host0MAC = mac
@@ -857,14 +912,14 @@ func fillNetNSInfo(leaderPID int, rt *ContainerRuntime) {
 	}
 
 	if rt.Host0MAC == "" {
-		if macOut, err := exec.Command(nsenterBin, "-t", pidStr, "-n", "cat", "/sys/class/net/host0/address").Output(); err == nil {
+		if macOut, err := execOutputTimeout(defaultProbeTimeout, nsenterBin, "-t", pidStr, "-n", "cat", "/sys/class/net/host0/address"); err == nil {
 			if m := strings.TrimSpace(string(macOut)); m != "" && m != "00:00:00:00:00:00" {
 				rt.Host0MAC = m
 			}
 		}
 	}
 
-	routeOut, err := exec.Command(nsenterBin, "-t", pidStr, "-n", ipBin, "route", "show", "default").Output()
+	routeOut, err := execOutputTimeout(defaultProbeTimeout, nsenterBin, "-t", pidStr, "-n", ipBin, "route", "show", "default")
 	if err == nil {
 		fields := strings.Fields(string(routeOut))
 		for i := 0; i < len(fields)-1; i++ {
@@ -978,6 +1033,15 @@ func syncStandardUnitFiles(cfg ContainerConfig) error {
 }
 
 func (m *Manager) ControlService(machine string, action string) error {
+	releaseOp, err := m.acquireContainerOp("service-"+action, machine)
+	if err != nil {
+		return err
+	}
+	defer releaseOp()
+	return m.controlServiceUnlocked(machine, action)
+}
+
+func (m *Manager) controlServiceUnlocked(machine string, action string) error {
 	info, err := m.GetContainer(machine)
 	if err != nil {
 		return err
@@ -1056,6 +1120,12 @@ func (m *Manager) ControlService(machine string, action string) error {
 }
 
 func (m *Manager) UpdateConfig(machine string, req UpdateConfigRequest) (*ContainerInfo, error) {
+	releaseOp, err := m.acquireContainerOp("update-config", machine)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseOp()
+
 	info, err := m.GetContainer(machine)
 	if err != nil {
 		return nil, err
@@ -1066,40 +1136,33 @@ func (m *Manager) UpdateConfig(machine string, req UpdateConfigRequest) (*Contai
 	}
 
 	if req.Description != "" || cfg.HasConfigFile {
-		cfg.Description = strings.TrimSpace(req.Description)
+		cfg.Description = sanitizeSingleLineText(req.Description)
 	}
 
 	if strings.TrimSpace(req.TmpSize) != "" {
-		if !regexp.MustCompile(`^[0-9]+[KMGTP]?$`).MatchString(strings.TrimSpace(req.TmpSize)) {
-			return nil, fmt.Errorf("无效的 /tmp 容量格式: %s（示例：4G、512M）", req.TmpSize)
+		if err := validateTmpSize(req.TmpSize); err != nil {
+			return nil, err
 		}
 		cfg.TmpSize = strings.TrimSpace(req.TmpSize)
 	}
 
 	if strings.TrimSpace(req.PhysicalNIC) != "" {
+		if err := validatePhysicalNIC(req.PhysicalNIC); err != nil {
+			return nil, err
+		}
 		cfg.PhysicalNIC = strings.TrimSpace(req.PhysicalNIC)
 	}
 
-	// Validate bind mounts
-	var cleanBinds []BindMount
-	for _, b := range req.BindMounts {
-		hp := strings.TrimSpace(b.HostPath)
-		cp := strings.TrimSpace(b.ContainerPath)
-		if hp == "" || cp == "" {
-			return nil, errors.New("Bind Mount 宿主机路径和容器路径均不能为空")
-		}
-		if !filepath.IsAbs(hp) || !filepath.IsAbs(cp) {
-			return nil, fmt.Errorf("Bind Mount 必须使用绝对路径: %s -> %s", hp, cp)
-		}
-		st, err := os.Stat(hp)
-		if err != nil || !st.IsDir() {
-			return nil, fmt.Errorf("宿主机源目录不存在或不是目录: %s", hp)
-		}
-		cleanBinds = append(cleanBinds, BindMount{
-			HostPath:      hp,
-			ContainerPath: cp,
-			ReadOnly:      b.ReadOnly,
-		})
+	if err := validateMemoryMax(req.MemoryMax); err != nil {
+		return nil, err
+	}
+	if err := validateCPUQuota(req.CPUQuota); err != nil {
+		return nil, err
+	}
+
+	cleanBinds, err := validateBindMounts(req.BindMounts)
+	if err != nil {
+		return nil, err
 	}
 	cfg.BindMounts = cleanBinds
 	cfg.MemoryMax = strings.TrimSpace(req.MemoryMax)
@@ -1217,6 +1280,12 @@ func (m *Manager) GetContainerSpecRaw(machine string) (map[string]interface{}, e
 }
 
 func (m *Manager) DeleteContainer(machine string, deleteRootfs bool, deleteImages bool) error {
+	releaseOp, err := m.acquireContainerOp("delete", machine)
+	if err != nil {
+		return err
+	}
+	defer releaseOp()
+
 	info, err := m.GetContainer(machine)
 	if err != nil {
 		return err
@@ -1225,6 +1294,8 @@ func (m *Manager) DeleteContainer(machine string, deleteRootfs bool, deleteImage
 	if cfg.Layout == LayoutExternal {
 		return fmt.Errorf("外部容器不支持在本管理器中删除，请先迁移或手动管理")
 	}
+
+	m.removeContainerSchedule(cfg.Machine)
 
 	_ = exec.Command("systemctl", "disable", "--now", cfg.ServiceName).Run()
 	_ = os.Remove(filepath.Join("/etc/systemd/system/multi-user.target.wants", cfg.ServiceName))
@@ -1255,12 +1326,20 @@ func (m *Manager) DeleteContainer(machine string, deleteRootfs bool, deleteImage
 			if cfg.ImagesDir != "" {
 				_ = os.RemoveAll(cfg.ImagesDir)
 			}
-		} else if cfg.SnapshotDir != "" {
-			snaps, _ := filepath.Glob(filepath.Join(cfg.SnapshotDir, cfg.Machine+"-*"))
-			for _, sp := range snaps {
-				if err := exec.Command("btrfs", "subvolume", "delete", sp).Run(); err != nil {
-					_ = os.RemoveAll(sp)
+		} else {
+			if cfg.SnapshotDir != "" {
+				snaps, _ := filepath.Glob(filepath.Join(cfg.SnapshotDir, cfg.Machine+"-*"))
+				for _, sp := range snaps {
+					if err := exec.Command("btrfs", "subvolume", "delete", sp).Run(); err != nil {
+						_ = os.RemoveAll(sp)
+					}
 				}
+			}
+			if cfg.ExportsDir != "" {
+				_ = os.RemoveAll(cfg.ExportsDir)
+			}
+			if cfg.ContainerDir != "" {
+				_ = os.Remove(filepath.Join(cfg.ContainerDir, "images"))
 			}
 		}
 	}
@@ -1304,7 +1383,7 @@ func (m *Manager) InspectHostEnvironment() HostEnvironment {
 	if hn, err := os.Hostname(); err == nil {
 		env.Hostname = hn
 	}
-	if out, err := exec.Command("uname", "-r").Output(); err == nil {
+	if out, err := execOutputTimeout(defaultProbeTimeout, "uname", "-r"); err == nil {
 		env.Kernel = strings.TrimSpace(string(out))
 	}
 	if b, err := os.ReadFile("/etc/os-release"); err == nil {
@@ -1331,7 +1410,7 @@ func (m *Manager) InspectHostEnvironment() HostEnvironment {
 
 	bridgeSet := make(map[string]bool)
 	if env.HasOVS {
-		if out, err := exec.Command(ovsPath, "list-br").Output(); err == nil {
+		if out, err := execOutputTimeout(defaultProbeTimeout, ovsPath, "list-br"); err == nil {
 			for _, line := range strings.Split(string(out), "\n") {
 				line = strings.TrimSpace(line)
 				if line != "" {
@@ -1357,7 +1436,7 @@ func (m *Manager) InspectHostEnvironment() HostEnvironment {
 				nic.MAC = strings.TrimSpace(string(b))
 			}
 			if env.HasOVS {
-				if brOut, err := exec.Command(ovsPath, "port-to-br", name).Output(); err == nil {
+				if brOut, err := execOutputTimeout(defaultProbeTimeout, ovsPath, "port-to-br", name); err == nil {
 					br := strings.TrimSpace(string(brOut))
 					if br != "" {
 						nic.OVSBridge = br
@@ -1541,7 +1620,7 @@ func (m *Manager) BrowseFS(reqPath string) (*FSBrowseResult, error) {
 }
 
 func IsBtrfsPath(path string) bool {
-	out, err := exec.Command("stat", "-f", "-c", "%T", path).Output()
+	out, err := execOutputTimeout(defaultProbeTimeout, "stat", "-f", "-c", "%T", path)
 	if err != nil {
 		return false
 	}

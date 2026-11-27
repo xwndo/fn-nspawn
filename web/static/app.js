@@ -431,7 +431,7 @@
   function renderAboutModal() {
     const h = state.host || {};
     const me = state.me || {};
-    const ver = h.app_version || '1.4.2';
+    const ver = h.app_version || '1.4.3';
     $('aboutVersion').textContent = `v${ver}`;
     const userDisplay = me.username || 'admin';
     const depPill = (ok) => ok
@@ -1629,12 +1629,38 @@ ${cdir}/
     metaEl.textContent = `镜像文件: ${item.filename} · 架构: ${item.arch} · 大小: ${sizeText}${cacheText}${owHint}`;
   }
 
+  async function ensureWSToken() {
+    if (state.me && state.me.ws_token) {
+      return state.me.ws_token;
+    }
+    try {
+      const me = await apiFetch('/api/me');
+      state.me = me;
+      return me.ws_token || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   function syncCreateUserForSource() {
     const mode = $('newSourceType')?.value;
     const isOnlineOpenWrt = mode === 'online_image' && $('newOnlineDistro')?.value === 'openwrt';
+    const archiveVal = ($('newSourceArchive')?.value || '').toLowerCase();
+    const isArchiveOpenWrt = mode === 'archive' && (archiveVal.includes('openwrt') || /(?:^|[\\/])ow-[a-z0-9_-]/.test(archiveVal));
+    const isOpenWrt = isOnlineOpenWrt || isArchiveOpenWrt;
     const userInput = $('newUser');
+    const userLabel = $('newUserLabel');
     if (!userInput) return;
-    if (isOnlineOpenWrt) {
+    if (userLabel) {
+      if (isOpenWrt) {
+        userLabel.textContent = '容器登录用户 (OpenWrt 固定 root)';
+      } else if (mode === 'archive') {
+        userLabel.textContent = '容器普通 sudo 用户名（OpenWrt 归档自动使用 root）*';
+      } else {
+        userLabel.textContent = '容器普通 sudo 用户名 *';
+      }
+    }
+    if (isOpenWrt) {
       if (userInput.value !== 'root') {
         userInput.dataset.prevUser = userInput.value || 'admin';
       }
@@ -1785,6 +1811,15 @@ ${cdir}/
 
   function prepareCreateModalDefaults() {
     setNewPasswordVisible(false);
+    $('newMachine').value = '';
+    $('vethPreview').textContent = '(veth: ve-...)';
+    $('newPassword').value = '';
+    $('newMemoryMax').value = '';
+    $('newCPUQuota').value = '';
+    $('newInstallExtras').checked = true;
+    $('newAutostartBoot').checked = true;
+    $('newAutoStart').checked = true;
+    renderBindList($('newBindList'), []);
     const cfg = state.settings;
     if (cfg) {
       $('newSuite').value = cfg.default_suite || 'trixie';
@@ -1846,6 +1881,8 @@ ${cdir}/
   });
   $('btnEmptyCreate').addEventListener('click', openCreateModalDefault);
 
+  $('newSourceArchive').addEventListener('input', syncCreateUserForSource);
+
   $('btnBrowseArchive').addEventListener('click', () => {
     openFSBrowser({
       title: '选择 Rootfs 镜像归档 (.tar.gz / .tar.zst / .tar.xz)',
@@ -1853,6 +1890,7 @@ ${cdir}/
       initialPath: $('newSourceArchive').value.trim() || getStandardBaseRoot(),
       onSelect: (p) => {
         $('newSourceArchive').value = p;
+        syncCreateUserForSource();
       },
     });
   });
@@ -2089,8 +2127,28 @@ ${cdir}/
   });
 
   // Settings
+  function renderImageCacheStats(stats) {
+    const infoEl = $('setImageCacheInfo');
+    const clearBtn = $('btnClearImageCache');
+    if (!infoEl || !clearBtn) return;
+    if (!stats) {
+      infoEl.textContent = '无法获取缓存统计';
+      clearBtn.disabled = true;
+      return;
+    }
+    const count = stats.file_count || 0;
+    const bytes = stats.total_bytes || 0;
+    infoEl.textContent = count > 0
+      ? `已缓存 ${count} 个镜像包 · 共占用 ${formatBytes(bytes)}（目录: ${stats.cache_dir || '-'}）`
+      : `当前暂无已缓存的在线镜像（目录: ${stats.cache_dir || '-'}）`;
+    clearBtn.disabled = count === 0;
+  }
+
   $('btnSettings').addEventListener('click', async () => {
-    const cfg = await apiFetch('/api/settings');
+    const [cfg, cacheStats] = await Promise.all([
+      apiFetch('/api/settings'),
+      apiFetch('/api/images/cache').catch(() => null),
+    ]);
     state.settings = cfg;
     $('setStandardBaseRoot').value = cfg.standard_base_root || '/vol1/nspawn';
     $('setBaseRoots').value = (cfg.base_roots || []).join('\n');
@@ -2099,7 +2157,24 @@ ${cdir}/
     $('setDefaultMirror').value = cfg.default_mirror || '';
     $('setDefaultSecMirror').value = cfg.default_security_mirror || '';
     $('setTheme').value = window.getThemePref ? window.getThemePref() : 'auto';
+    renderImageCacheStats(cacheStats);
     openModal('settingsModal');
+  });
+
+  $('btnClearImageCache').addEventListener('click', async () => {
+    if (!confirm('确认清理本地缓存的所有在线下载系统镜像吗？（不影响已创建的任何容器）')) return;
+    const btn = $('btnClearImageCache');
+    btn.disabled = true;
+    try {
+      const res = await apiFetch('/api/images/cache', { method: 'DELETE' });
+      state.onlineCatalog.source = '';
+      toast(`已清理 ${res.removed_files || 0} 个镜像缓存，释放 ${formatBytes(res.freed_bytes || 0)}`);
+      const fresh = await apiFetch('/api/images/cache').catch(() => null);
+      renderImageCacheStats(fresh);
+    } catch (err) {
+      btn.disabled = false;
+      toast(`清理镜像缓存失败: ${err.message}`, 'err');
+    }
   });
 
   $('btnBrowseStdRoot').addEventListener('click', () => {
@@ -2238,7 +2313,7 @@ ${cdir}/
     }
   }
 
-  function connectTerminal(machine = state.selectedMachine) {
+  async function connectTerminal(machine = state.selectedMachine) {
     if (!machine) return;
     const user = $('termUser').value.trim() || 'root';
     state.termUsers[machine] = user;
@@ -2255,7 +2330,9 @@ ${cdir}/
     }
     session.fitAddon.fit();
 
-    const ws = new WebSocket(wsUrl(`/api/ws/terminal?machine=${encodeURIComponent(machine)}&user=${encodeURIComponent(user)}`));
+    const token = await ensureWSToken();
+    if (session.status !== 'connecting') return;
+    const ws = new WebSocket(wsUrl(`/api/ws/terminal?machine=${encodeURIComponent(machine)}&user=${encodeURIComponent(user)}&token=${encodeURIComponent(token)}`));
     ws.binaryType = 'arraybuffer';
     session.ws = ws;
 
@@ -2368,32 +2445,52 @@ ${cdir}/
   });
 
   // Live Logs
-  function connectLogs() {
+  const MAX_LIVE_LOG_LINES = 2000;
+  let liveLogLines = [];
+
+  async function connectLogs() {
     const machine = state.selectedMachine;
     if (!machine) return;
     disconnectLogs();
+    liveLogLines = [];
     const viewer = $('logViewer');
     viewer.textContent = '';
-    const ws = new WebSocket(wsUrl(`/api/ws/logs?machine=${encodeURIComponent(machine)}`));
     $('logStatus').textContent = '实时追踪中...';
+    const token = await ensureWSToken();
+    if (state.selectedMachine !== machine) return;
+    const ws = new WebSocket(wsUrl(`/api/ws/logs?machine=${encodeURIComponent(machine)}&token=${encodeURIComponent(token)}`));
     ws.onmessage = (ev) => {
-      viewer.textContent += (viewer.textContent ? '\n' : '') + ev.data;
+      if (state.logWS !== ws) return;
+      const incoming = String(ev.data ?? '').split('\n');
+      liveLogLines.push(...incoming);
+      if (liveLogLines.length > MAX_LIVE_LOG_LINES) {
+        liveLogLines.splice(0, liveLogLines.length - MAX_LIVE_LOG_LINES);
+      }
+      viewer.textContent = liveLogLines.join('\n');
       viewer.scrollTop = viewer.scrollHeight;
     };
-    ws.onclose = () => { $('logStatus').textContent = '已暂停'; };
+    ws.onclose = () => {
+      if (state.logWS === ws) {
+        $('logStatus').textContent = '已暂停';
+      }
+    };
     state.logWS = ws;
   }
 
   function disconnectLogs() {
     if (state.logWS) {
-      state.logWS.close();
+      const ws = state.logWS;
       state.logWS = null;
+      ws.close();
     }
   }
 
   $('btnLogConnect').addEventListener('click', connectLogs);
   $('btnLogStop').addEventListener('click', disconnectLogs);
-  $('btnLogClear').addEventListener('click', () => { $('logViewer').textContent = ''; });
+  $('btnLogClear').addEventListener('click', () => {
+    liveLogLines = [];
+    $('logViewer').textContent = '';
+  });
 
   // Tasks
   async function loadTasks() {

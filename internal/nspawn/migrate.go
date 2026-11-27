@@ -71,6 +71,9 @@ func (m *Manager) StartMigrateTask(machine string, req MigrateContainerRequest) 
 	if nic == "" {
 		return nil, fmt.Errorf("未检测到已开启 OVS 的物理网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS")
 	}
+	if err := validatePhysicalNIC(nic); err != nil {
+		return nil, err
+	}
 	if err := exec.Command("ip", "link", "show", nic).Run(); err != nil {
 		return nil, fmt.Errorf("找不到物理网卡 %s，请在迁移窗口中重新选择", nic)
 	}
@@ -84,9 +87,91 @@ func (m *Manager) StartMigrateTask(machine string, req MigrateContainerRequest) 
 		autostart = *req.Autostart
 	}
 
+	releaseOp, err := m.acquireContainerOp("migrate", srcCfg.Machine, targetMachine)
+	if err != nil {
+		return nil, err
+	}
+
 	task := m.tasks.Create("migrate-standard", targetMachine)
-	go m.runMigrateTask(task.ID, info, paths, targetMachine, veth, nic, autostart, req.StartNow)
+	go m.runMigrateTask(task.ID, info, paths, targetMachine, veth, nic, autostart, req.StartNow, releaseOp)
 	return task, nil
+}
+
+func updateMigratedContainerIdentityAndNet(rootfs, oldMachine, targetMachine string, srcCfg ContainerConfig) (initMode string, enableTun bool, distro string, containerUser string) {
+	initMode = srcCfg.InitMode
+	enableTun = srcCfg.EnableTun
+	distro = srcCfg.Distro
+	containerUser = srcCfg.ContainerUser
+
+	if isOpenWrtRootfs(rootfs, distro) {
+		initMode = InitModeOpenWrt
+		enableTun = true
+		if distro == "" {
+			distro = "openwrt"
+		}
+		if containerUser == "" {
+			containerUser = "root"
+		}
+	}
+
+	if initMode == InitModeOpenWrt {
+		if targetMachine != oldMachine {
+			_ = os.WriteFile(filepath.Join(rootfs, "etc/hostname"), []byte(targetMachine+"\n"), 0644)
+			sysCfgPath := filepath.Join(rootfs, "etc/config/system")
+			if b, err := os.ReadFile(sysCfgPath); err == nil {
+				lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
+				for i, l := range lines {
+					if strings.HasPrefix(strings.TrimSpace(l), "option hostname") {
+						lines[i] = fmt.Sprintf("\toption hostname '%s'", targetMachine)
+					}
+				}
+				_ = os.WriteFile(sysCfgPath, []byte(strings.Join(lines, "\n")), 0644)
+			}
+		}
+		netCfgPath := filepath.Join(rootfs, "etc/config/network")
+		if b, err := os.ReadFile(netCfgPath); err != nil || !strings.Contains(string(b), "host0") {
+			_ = os.MkdirAll(filepath.Dir(netCfgPath), 0755)
+			if err == nil {
+				origBackup := netCfgPath + ".orig"
+				if _, sErr := os.Stat(origBackup); os.IsNotExist(sErr) {
+					_ = os.WriteFile(origBackup, b, 0644)
+				}
+			}
+			_ = os.WriteFile(netCfgPath, []byte(renderOpenWrtHost0NetworkUCI()), 0644)
+		}
+		dhcpCfgPath := filepath.Join(rootfs, "etc/config/dhcp")
+		var dhcpRaw string
+		if b, err := os.ReadFile(dhcpCfgPath); err == nil {
+			dhcpRaw = string(b)
+		}
+		_ = os.WriteFile(dhcpCfgPath, []byte(ensureOpenWrtLanDHCPIgnored(dhcpRaw)), 0644)
+		return initMode, enableTun, distro, containerUser
+	}
+
+	netDir := filepath.Join(rootfs, "etc/systemd/network")
+	_ = os.MkdirAll(netDir, 0755)
+	netCfgFile := filepath.Join(netDir, "20-host0.network")
+	if !fileExists(netCfgFile) {
+		netCfg := "[Match]\nName=host0\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nUseDNS=yes\nUseRoutes=yes\n"
+		_ = os.WriteFile(netCfgFile, []byte(netCfg), 0644)
+	}
+	if systemdUnitExistsInRootfs(rootfs, "systemd-networkd.service") {
+		_ = exec.Command("systemctl", "--root="+rootfs, "enable", "systemd-networkd.service").Run()
+	}
+	if targetMachine != oldMachine {
+		_ = os.WriteFile(filepath.Join(rootfs, "etc/hostname"), []byte(targetMachine+"\n"), 0644)
+		hostsPath := filepath.Join(rootfs, "etc/hosts")
+		if hb, err := os.ReadFile(hostsPath); err == nil {
+			updated := string(hb)
+			if oldMachine != "" && strings.Contains(updated, oldMachine) {
+				updated = strings.ReplaceAll(updated, oldMachine, targetMachine)
+			} else if !strings.Contains(updated, targetMachine) {
+				updated = strings.TrimRight(updated, "\n") + fmt.Sprintf("\n127.0.1.1 %s\n", targetMachine)
+			}
+			_ = os.WriteFile(hostsPath, []byte(updated), 0644)
+		}
+	}
+	return initMode, enableTun, distro, containerUser
 }
 
 func (m *Manager) runMigrateTask(
@@ -98,7 +183,9 @@ func (m *Manager) runMigrateTask(
 	physicalNIC string,
 	autostart bool,
 	startNow bool,
+	releaseOp func(),
 ) {
+	defer releaseOp()
 	var taskErr error
 	cleanupTarget := true
 	defer func() {
@@ -204,17 +291,7 @@ func (m *Manager) runMigrateTask(
 	}
 
 	// 3. Ensure cloned container network & hostname (without touching original rootfs)
-	netDir := filepath.Join(paths.Rootfs, "etc/systemd/network")
-	_ = os.MkdirAll(netDir, 0755)
-	netCfgFile := filepath.Join(netDir, "20-host0.network")
-	if !fileExists(netCfgFile) {
-		netCfg := "[Match]\nName=host0\n\n[Network]\nDHCP=yes\n\n[DHCPv4]\nUseDNS=yes\nUseRoutes=yes\n"
-		_ = os.WriteFile(netCfgFile, []byte(netCfg), 0644)
-	}
-	_ = exec.Command("systemctl", "--root="+paths.Rootfs, "enable", "systemd-networkd.service").Run()
-	if targetMachine != srcCfg.Machine {
-		_ = os.WriteFile(filepath.Join(paths.Rootfs, "etc/hostname"), []byte(targetMachine+"\n"), 0644)
-	}
+	initMode, enableTun, distro, containerUser := updateMigratedContainerIdentityAndNet(paths.Rootfs, srcCfg.Machine, targetMachine, srcCfg)
 
 	// 4. Generate standardized config/ (5 files) and verify
 	logFn("3. 按原容器配置生成标准化 config/（container.json + .service + OVS 脚本 + restore.sh）...")
@@ -241,14 +318,16 @@ func (m *Manager) runMigrateTask(
 		Description:   desc,
 		Layout:        DefaultSpecLayout(),
 		System: SpecSystem{
-			ContainerUser: srcCfg.ContainerUser,
+			ContainerUser: containerUser,
 			Hostname:      targetMachine,
 			Autostart:     autostart,
 			ServiceName:   paths.ServiceName,
+			InitMode:      initMode,
+			EnableTun:     enableTun,
 		},
 		Image: SpecImage{
 			SourceType:     sourceType,
-			Distro:         srcCfg.Distro,
+			Distro:         distro,
 			Suite:          srcCfg.Suite,
 			Arch:           srcCfg.Arch,
 			Mirror:         srcCfg.Mirror,
@@ -268,6 +347,7 @@ func (m *Manager) runMigrateTask(
 			TasksMax:  tasksMax,
 		},
 		BindMounts: append([]BindMount(nil), srcCfg.BindMounts...),
+		Backup:     cloneSpecBackup(srcCfg.Backup),
 	}
 
 	if err := WriteContainerSpec(paths.ConfigFile, spec); err != nil {

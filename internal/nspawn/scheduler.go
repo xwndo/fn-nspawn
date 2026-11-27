@@ -332,6 +332,19 @@ func (m *Manager) syncContainerSchedule(machine string, backup *SpecBackup) {
 	}
 }
 
+func (m *Manager) removeContainerSchedule(machine string) {
+	if machine == "" {
+		return
+	}
+	m.schedMu.Lock()
+	defer m.schedMu.Unlock()
+	delete(m.schedRules, machine)
+	delete(m.schedStatus, machine+":snapshot")
+	delete(m.schedStatus, machine+":export")
+	delete(m.schedLastMinute, machine+":snapshot")
+	delete(m.schedLastMinute, machine+":export")
+}
+
 func (m *Manager) syncAllSchedulesFromContainers(list []ContainerInfo) {
 	next := make(map[string]SpecBackup)
 	for _, item := range list {
@@ -356,6 +369,22 @@ func (m *Manager) RefreshBackupSchedules() {
 		for _, specPath := range matches {
 			spec, err := ReadContainerSpec(specPath)
 			if err != nil || spec.Backup == nil {
+				continue
+			}
+			b := spec.Backup
+			if (b.Snapshot != nil && b.Snapshot.Enabled) || (b.Export != nil && b.Export.Enabled) {
+				next[spec.Machine] = *cloneSpecBackup(b)
+			}
+		}
+	}
+	for _, baseRoot := range scanRoots {
+		legacyMatches, _ := filepath.Glob(filepath.Join(baseRoot, "*-conf", ContainerSpecFileName))
+		for _, specPath := range legacyMatches {
+			spec, err := ReadContainerSpec(specPath)
+			if err != nil || spec.Backup == nil {
+				continue
+			}
+			if _, exists := next[spec.Machine]; exists {
 				continue
 			}
 			b := spec.Backup
@@ -401,6 +430,12 @@ func (m *Manager) GetContainerBackup(machine string) (*ContainerBackupResponse, 
 }
 
 func (m *Manager) SaveContainerBackup(machine string, raw SpecBackup) (*ContainerBackupResponse, error) {
+	releaseOp, err := m.acquireContainerOp("save-backup", machine)
+	if err != nil {
+		return nil, err
+	}
+	defer releaseOp()
+
 	info, err := m.GetContainer(machine)
 	if err != nil {
 		return nil, err
@@ -464,6 +499,14 @@ func (m *Manager) StartScheduledBackupTask(machine, kind, trigger string) (*Task
 	m.schedRunning[runKey] = true
 	m.schedMu.Unlock()
 
+	releaseOp, opErr := m.acquireContainerOp("auto-"+kind, machine)
+	if opErr != nil {
+		m.schedMu.Lock()
+		delete(m.schedRunning, runKey)
+		m.schedMu.Unlock()
+		return nil, opErr
+	}
+
 	taskType := "auto-snapshot"
 	if kind == "export" {
 		taskType = "auto-export"
@@ -471,6 +514,7 @@ func (m *Manager) StartScheduledBackupTask(machine, kind, trigger string) (*Task
 	task := m.tasks.Create(taskType, machine)
 
 	go func() {
+		defer releaseOp()
 		var taskErr error
 		var summary string
 		started := time.Now()
@@ -506,7 +550,7 @@ func (m *Manager) StartScheduledBackupTask(machine, kind, trigger string) (*Task
 			rule := b.Snapshot
 			logFn(fmt.Sprintf("[%s] 开始执行 Btrfs 自动快照 (tag=%s, ro=%v, keepCount=%d, keepDays=%d)",
 				trigLabel, rule.Tag, rule.ReadOnly, rule.KeepCount, rule.KeepDays))
-			sn, err := m.CreateSnapshot(machine, CreateSnapshotRequest{
+			sn, err := m.createSnapshotUnlocked(machine, CreateSnapshotRequest{
 				Tag:       rule.Tag,
 				ReadOnly:  rule.ReadOnly,
 				StopFirst: rule.StopFirst,
@@ -526,7 +570,7 @@ func (m *Manager) StartScheduledBackupTask(machine, kind, trigger string) (*Task
 				}
 				expired := selectExpiredBackupEntries(machine, rule.Tag, names, rule.KeepCount, rule.KeepDays, time.Now())
 				for _, oldName := range expired {
-					if delErr := m.DeleteSnapshot(machine, oldName); delErr != nil {
+					if delErr := m.deleteSnapshotUnlocked(machine, oldName); delErr != nil {
 						logFn(fmt.Sprintf("[WARN] 清理过期快照 %s 失败: %v", oldName, delErr))
 					} else {
 						pruned++
@@ -561,7 +605,7 @@ func (m *Manager) StartScheduledBackupTask(machine, kind, trigger string) (*Task
 			}
 			expired := selectExpiredBackupEntries(machine, rule.Tag, names, rule.KeepCount, rule.KeepDays, time.Now())
 			for _, oldName := range expired {
-				if delErr := m.DeleteImage(machine, oldName); delErr != nil {
+				if delErr := m.deleteImageUnlocked(machine, oldName); delErr != nil {
 					logFn(fmt.Sprintf("[WARN] 清理过期归档 %s 失败: %v", oldName, delErr))
 				} else {
 					pruned++

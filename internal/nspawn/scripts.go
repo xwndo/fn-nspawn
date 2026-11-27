@@ -7,7 +7,7 @@ import (
 )
 
 func escapeSystemdPercent(s string) string {
-	return strings.ReplaceAll(s, "%", "%%")
+	return strings.ReplaceAll(sanitizeSingleLineText(s), "%", "%%")
 }
 
 func quoteSystemdArg(s string) string {
@@ -21,6 +21,12 @@ func quoteSystemdArg(s string) string {
 }
 
 func RenderServiceUnit(cfg ContainerConfig) string {
+	cfg.Machine = sanitizeSingleLineText(cfg.Machine)
+	cfg.TmpSize = sanitizeSingleLineText(cfg.TmpSize)
+	cfg.TasksMax = sanitizeSingleLineText(cfg.TasksMax)
+	cfg.MemoryMax = sanitizeSingleLineText(cfg.MemoryMax)
+	cfg.CPUQuota = sanitizeSingleLineText(cfg.CPUQuota)
+	cfg.PhysicalNIC = sanitizeSingleLineText(cfg.PhysicalNIC)
 	if cfg.TmpSize == "" {
 		cfg.TmpSize = "4G"
 	}
@@ -31,11 +37,11 @@ func RenderServiceUnit(cfg ContainerConfig) string {
 		cfg.PhysicalNIC = "enp2s0"
 	}
 
-	svcName := cfg.ServiceName
+	svcName := sanitizeSingleLineText(cfg.ServiceName)
 	if svcName == "" && cfg.Machine != "" {
 		svcName = fmt.Sprintf("nspawn-%s.service", cfg.Machine)
 	}
-	sourcePath := strings.TrimSpace(cfg.ServicePath)
+	sourcePath := sanitizeSingleLineText(cfg.ServicePath)
 	if sourcePath == "" && cfg.ConfDir != "" && svcName != "" {
 		sourcePath = filepath.Join(cfg.ConfDir, svcName)
 	}

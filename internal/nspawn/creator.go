@@ -55,6 +55,9 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	if !reUserName.MatchString(req.ContainerUser) {
 		return nil, fmt.Errorf("容器用户名格式不正确: %s", req.ContainerUser)
 	}
+	if err := validatePassword(req.Password); err != nil {
+		return nil, err
+	}
 	if req.SourceType == "debootstrap" && req.Password == "" {
 		return nil, fmt.Errorf("在线构建容器时，容器用户密码不能为空")
 	}
@@ -102,8 +105,20 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 	if req.PhysicalNIC == "" {
 		return nil, fmt.Errorf("未检测到已开启 OVS 的物理网卡，请先在飞牛「系统设置 → 网络设置」中为物理网卡开启 OVS")
 	}
+	if err := validatePhysicalNIC(req.PhysicalNIC); err != nil {
+		return nil, err
+	}
 	if req.TmpSize == "" {
 		req.TmpSize = "4G"
+	}
+	if err := validateTmpSize(req.TmpSize); err != nil {
+		return nil, err
+	}
+	if err := validateMemoryMax(req.MemoryMax); err != nil {
+		return nil, err
+	}
+	if err := validateCPUQuota(req.CPUQuota); err != nil {
+		return nil, err
 	}
 	if req.Distro == "" {
 		req.Distro = "debian"
@@ -136,6 +151,17 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 			req.SecurityMirror = "https://mirrors.ustc.edu.cn/debian-security"
 		}
 	}
+	if req.SourceType == "debootstrap" {
+		if err := validateSuite(req.Suite); err != nil {
+			return nil, err
+		}
+		if err := validateMirrorURL(req.Mirror); err != nil {
+			return nil, err
+		}
+		if err := validateMirrorURL(req.SecurityMirror); err != nil {
+			return nil, err
+		}
+	}
 
 	paths := BuildStandardPaths(req.BaseRoot, req.Machine)
 	if _, err := os.Stat(paths.Rootfs); err == nil {
@@ -153,20 +179,21 @@ func (m *Manager) StartCreateTask(req CreateContainerRequest) (*TaskRecord, erro
 		return nil, fmt.Errorf("物理网卡 %s 当前未加入任何 OVS Bridge，请先在 fnOS 网络设置启用 OVS", req.PhysicalNIC)
 	}
 
-	for _, b := range req.BindMounts {
-		if !filepath.IsAbs(b.HostPath) || !filepath.IsAbs(b.ContainerPath) {
-			return nil, fmt.Errorf("Bind Mount 必须使用绝对路径: %s -> %s", b.HostPath, b.ContainerPath)
-		}
-		st, err := os.Stat(b.HostPath)
-		if err != nil || !st.IsDir() {
-			return nil, fmt.Errorf("宿主机源目录不存在: %s", b.HostPath)
-		}
+	cleanBinds, err := validateBindMounts(req.BindMounts)
+	if err != nil {
+		return nil, err
+	}
+	req.BindMounts = cleanBinds
+
+	releaseOp, err := m.acquireContainerOp("create", req.Machine)
+	if err != nil {
+		return nil, err
 	}
 
 	_ = m.cfgStore.AddBaseRoot(req.BaseRoot)
 
 	task := m.tasks.Create("create", req.Machine)
-	go m.runCreateTask(task.ID, req, paths, veth)
+	go m.runCreateTask(task.ID, req, paths, veth, releaseOp)
 	return task, nil
 }
 
@@ -503,7 +530,8 @@ func buildDebootstrapArgs(distro, suite, arch, rootfs, mirror string, suiteScrip
 	return args, ""
 }
 
-func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths StandardPaths, veth string) {
+func (m *Manager) runCreateTask(taskID string, req CreateContainerRequest, paths StandardPaths, veth string, releaseOp func()) {
+	defer releaseOp()
 	var taskErr error
 	rootfsCreated := false
 	var mountedPaths []string

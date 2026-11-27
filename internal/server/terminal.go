@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +20,17 @@ import (
 
 var (
 	wsUpgrader = websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool { return true },
+		CheckOrigin: func(r *http.Request) bool {
+			origin := strings.TrimSpace(r.Header.Get("Origin"))
+			if origin == "" {
+				return true
+			}
+			u, err := url.Parse(origin)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return false
+			}
+			return true
+		},
 	}
 	reSafeUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
 )
@@ -31,6 +42,10 @@ type termControlMsg struct {
 }
 
 func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
+	if !s.verifyWSToken(r.URL.Query().Get("token")) {
+		http.Error(w, "invalid or missing websocket token", http.StatusForbidden)
+		return
+	}
 	machine := strings.TrimSpace(r.URL.Query().Get("machine"))
 	user := strings.TrimSpace(r.URL.Query().Get("user"))
 	if user == "" {
@@ -151,6 +166,10 @@ func (s *Server) handleWSTerminal(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWSLogs(w http.ResponseWriter, r *http.Request) {
+	if !s.verifyWSToken(r.URL.Query().Get("token")) {
+		http.Error(w, "invalid or missing websocket token", http.StatusForbidden)
+		return
+	}
 	machine := strings.TrimSpace(r.URL.Query().Get("machine"))
 	info, err := s.mgr.GetContainer(machine)
 	if err != nil {
