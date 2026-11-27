@@ -439,7 +439,7 @@
   function renderAboutModal() {
     const h = state.host || {};
     const me = state.me || {};
-    const ver = h.app_version || '1.4.5';
+    const ver = h.app_version || '1.4.6';
     $('aboutVersion').textContent = `v${ver}`;
     const userDisplay = me.username || 'admin';
     const depPill = (ok) => ok
